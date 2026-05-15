@@ -65,7 +65,7 @@ export default async function DocsPage({ params }) {
 
   return (
     <div className="grid min-h-screen md:grid-cols-[15rem_minmax(0,1fr)] lg:grid-cols-[15rem_minmax(0,1fr)_14rem]">
-      <DocsSidebarShell groups={groups} activeSlug={doc.slug} />
+      <DocsSidebarShell groups={groups} activeSlug={doc.slug} currentTitle={doc.title} />
 
       <main className="mx-auto w-full max-w-[54rem] px-4 pb-[50vh] pt-6 md:px-12">
         <header className="mb-8 border-b border-border pb-6">
