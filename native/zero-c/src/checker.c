@@ -954,6 +954,7 @@ static bool check_stmt_vec_with_loop(const Program *program, const Function *fun
 static bool check_lvalue_target(const Program *program, const Expr *target, Scope *scope, ZDiag *diag, char *out_type, size_t out_type_len);
 static const char *expr_type(const Program *program, const Expr *expr, Scope *scope);
 static bool types_compatible(const char *expected, const char *actual);
+static bool validate_type_names(const Program *program, const char *type, const ParamVec *primary, const ParamVec *secondary, bool allow_self, ZDiag *diag, int line, int column);
 static const Shape *find_shape_for_type(const Program *program, const char *type);
 static const Function *find_shape_method_decl(const Shape *shape, const char *name);
 static void set_expr_resolved_type(const Expr *expr, const char *type);
@@ -4164,24 +4165,88 @@ static bool check_lvalue_target(const Program *program, const Expr *target, Scop
   }
 }
 
-static bool register_borrow_binding(const Stmt *stmt, Scope *scope) {
+static bool call_result_borrow_origin(const Program *program, const Expr *expr, Scope *scope, char *out, size_t out_len, bool *mut_borrow) {
+  if (!program || !expr || expr->kind != EXPR_CALL || !expr->left || !out || out_len == 0) return false;
+  const char *return_type = expr_type(program, expr, scope);
+  bool return_mut = type_is_named_generic(return_type, "mutref");
+  if (!return_mut && !type_is_named_generic(return_type, "ref")) return false;
+
+  const Function *callee = NULL;
+  const Expr *receiver = NULL;
+  size_t param_offset = 0;
+  if (expr->left->kind == EXPR_IDENT) {
+    callee = find_function(program, expr->left->text);
+  } else if (expr->left->kind == EXPR_MEMBER) {
+    callee = find_namespace_shape_method(program, expr->left, NULL);
+    if (!callee) callee = find_constrained_interface_method(program, expr->left, NULL);
+    if (!callee && expr->left->left) {
+      receiver = expr->left->left;
+      const char *receiver_type_raw = expr_type(program, receiver, scope);
+      char receiver_type[192];
+      strip_ref_like_type(receiver_type_raw, receiver_type, sizeof(receiver_type));
+      const Shape *receiver_shape = find_shape_for_type(program, receiver_type);
+      callee = find_shape_method_decl(receiver_shape, expr->left->text);
+      if (callee && shape_method_receiver_info(callee, NULL)) {
+        param_offset = 1;
+      } else {
+        receiver = NULL;
+        callee = NULL;
+      }
+    }
+  }
+  if (!callee) return false;
+
+  if (receiver && callee->params.len > 0) {
+    const char *param_type = callee->params.items[0].type;
+    if (type_is_named_generic(param_type, "ref") || type_is_named_generic(param_type, "mutref")) {
+      bool origin_mut = false;
+      if (expr_borrow_origin(receiver, scope, out, out_len, &origin_mut)) {
+        if (mut_borrow) *mut_borrow = return_mut;
+        return true;
+      }
+      char root[128];
+      if (expr_root_ident(receiver, root, sizeof(root)) && scope_has(scope, root)) {
+        snprintf(out, out_len, "%s", root);
+        if (mut_borrow) *mut_borrow = return_mut;
+        return true;
+      }
+    }
+  }
+
+  for (size_t i = 0; i < expr->args.len && i + param_offset < callee->params.len; i++) {
+    const char *param_type = callee->params.items[i + param_offset].type;
+    if (!type_is_named_generic(param_type, "ref") && !type_is_named_generic(param_type, "mutref")) continue;
+    bool origin_mut = false;
+    if (!expr_borrow_origin(expr->args.items[i], scope, out, out_len, &origin_mut)) continue;
+    if (mut_borrow) *mut_borrow = return_mut;
+    return true;
+  }
+  return false;
+}
+
+static bool expr_reference_origin(const Program *program, const Expr *expr, Scope *scope, char *out, size_t out_len, bool *mut_borrow) {
+  return expr_borrow_origin(expr, scope, out, out_len, mut_borrow) ||
+         call_result_borrow_origin(program, expr, scope, out, out_len, mut_borrow);
+}
+
+static bool register_borrow_binding(const Program *program, const Stmt *stmt, Scope *scope) {
   if (!stmt || !stmt->name || !stmt->expr) return false;
   char root[128];
   bool mut_borrow = false;
-  if (!expr_borrow_origin(stmt->expr, scope, root, sizeof(root), &mut_borrow)) return false;
+  if (!expr_reference_origin(program, stmt->expr, scope, root, sizeof(root), &mut_borrow)) return false;
   const char *binding_type = stmt->resolved_type ? stmt->resolved_type : stmt->type;
   if (binding_type) mut_borrow = type_is_named_generic(binding_type, "mutref");
   scope_set_borrow_origin(scope, stmt->name, root, mut_borrow);
   return true;
 }
 
-static void update_borrow_assignment(const Expr *target, const Expr *value, Scope *scope) {
+static void update_borrow_assignment(const Program *program, const Expr *target, const Expr *value, Scope *scope) {
   if (!target || target->kind != EXPR_IDENT || !scope_has(scope, target->text)) return;
   const char *target_type = scope_type(scope, target->text);
   if (!type_is_named_generic(target_type, "ref") && !type_is_named_generic(target_type, "mutref")) return;
   char root[128];
   bool mut_borrow = false;
-  if (expr_borrow_origin(value, scope, root, sizeof(root), &mut_borrow)) {
+  if (expr_reference_origin(program, value, scope, root, sizeof(root), &mut_borrow)) {
     mut_borrow = type_is_named_generic(target_type, "mutref");
     scope_set_borrow_origin(scope, target->text, root, mut_borrow);
   } else {
@@ -4202,11 +4267,10 @@ static bool check_assignment_not_borrowed(const Expr *target, Scope *scope, ZDia
 }
 
 static bool check_return_borrow_escape(const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
-  (void)program;
   if (!expr) return true;
   char root[128];
   bool mut_borrow = false;
-  if (!expr_borrow_origin(expr, scope, root, sizeof(root), &mut_borrow)) return true;
+  if (!expr_reference_origin(program, expr, scope, root, sizeof(root), &mut_borrow)) return true;
   if (!scope_is_param(scope, root)) {
     char actual[160];
     snprintf(actual, sizeof(actual), "reference to local '%s'", root);
@@ -4218,29 +4282,54 @@ static bool check_return_borrow_escape(const Program *program, const Expr *expr,
 
 static bool check_return_call_borrow_escape(const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
   if (!expr || expr->kind != EXPR_CALL || !expr->left) return true;
-  const char *return_type = expr_type(program, expr, scope);
-  if (!type_is_named_generic(return_type, "ref") && !type_is_named_generic(return_type, "mutref")) return true;
-  const Function *callee = NULL;
-  if (expr->left->kind == EXPR_IDENT) callee = find_function(program, expr->left->text);
-  if (!callee) return true;
-  for (size_t i = 0; i < expr->args.len && i < callee->params.len; i++) {
-    const char *param_type = callee->params.items[i].type;
-    if (!type_is_named_generic(param_type, "ref") && !type_is_named_generic(param_type, "mutref")) continue;
-    char arg_root[128];
-    bool arg_mut_borrow = false;
-    if (!expr_borrow_origin(expr->args.items[i], scope, arg_root, sizeof(arg_root), &arg_mut_borrow)) continue;
-    (void)arg_mut_borrow;
-    if (scope_is_param(scope, arg_root)) continue;
-    char actual[160];
-    snprintf(actual, sizeof(actual), "call may return reference derived from local '%s'", arg_root);
-    return set_diag_detail(diag, 3030, "cannot return a reference derived from a local call argument", expr->line, expr->column, "reference derived from a parameter or longer-lived value", actual, "keep local borrows inside the current function or return an owned value");
-  }
-  return true;
+  char root[128];
+  bool mut_borrow = false;
+  if (!call_result_borrow_origin(program, expr, scope, root, sizeof(root), &mut_borrow)) return true;
+  (void)mut_borrow;
+  if (scope_is_param(scope, root)) return true;
+  char actual[160];
+  snprintf(actual, sizeof(actual), "call may return reference derived from local '%s'", root);
+  return set_diag_detail(diag, 3030, "cannot return a reference derived from a local call argument", expr->line, expr->column, "reference derived from a parameter or longer-lived value", actual, "keep local borrows inside the current function or return an owned value");
 }
 
 static bool check_return_reference_escape(const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
-  if (!check_return_borrow_escape(program, expr, scope, diag)) return false;
-  return check_return_call_borrow_escape(program, expr, scope, diag);
+  if (!check_return_call_borrow_escape(program, expr, scope, diag)) return false;
+  return check_return_borrow_escape(program, expr, scope, diag);
+}
+
+static bool param_vec_contains_name(const ParamVec *params, const char *name) {
+  if (!params || !name) return false;
+  for (size_t i = 0; i < params->len; i++) {
+    if (params->items[i].name && strcmp(params->items[i].name, name) == 0) return true;
+  }
+  return false;
+}
+
+static void collect_visible_type_names(Scope *scope, ParamVec *out) {
+  if (!out) return;
+  for (Scope *cursor = scope; cursor; cursor = cursor->parent) {
+    for (size_t i = 0; i < cursor->len; i++) {
+      if (!cursor->names[i] || !cursor->types[i] || strcmp(cursor->types[i], "Type") != 0) continue;
+      if (param_vec_contains_name(out, cursor->names[i])) continue;
+      if (out->len == out->cap) {
+        out->cap = out->cap ? out->cap * 2 : 8;
+        out->items = realloc(out->items, out->cap * sizeof(Param));
+      }
+      out->items[out->len++] = (Param){
+        .name = cursor->names[i],
+        .type = "Type",
+      };
+    }
+  }
+}
+
+static bool validate_local_type_names(const Program *program, const Function *fun, Scope *scope, const char *type, ZDiag *diag, int line, int column) {
+  if (!type) return true;
+  ParamVec visible = {0};
+  collect_visible_type_names(scope, &visible);
+  bool ok = validate_type_names(program, type, &visible, fun ? &fun->type_params : NULL, false, diag, line, column);
+  free(visible.items);
+  return ok;
 }
 
 static bool parse_match_int_literal(const char *text, unsigned long long *out) {
@@ -4335,6 +4424,7 @@ static bool check_stmt(const Program *program, const Function *fun, const Stmt *
       }
     }
     if (!validate_type_form(stmt->type, diag, stmt->line, stmt->column)) return false;
+    if (!validate_local_type_names(program, fun, scope, stmt->type, diag, stmt->line, stmt->column)) return false;
     if (!check_expr_expected(program, stmt->expr, scope, diag, stmt->type)) return false;
     const char *actual = expr_type(program, stmt->expr, scope);
     if (stmt->type && !types_compatible(stmt->type, actual)) {
@@ -4344,7 +4434,7 @@ static bool check_stmt(const Program *program, const Function *fun, const Stmt *
     mark_owned_move_if_needed(stmt->expr, scope, binding_type);
     set_stmt_resolved_type(stmt, binding_type);
     scope_add(scope, stmt->name, binding_type, stmt->mutable_binding);
-    register_borrow_binding(stmt, scope);
+    register_borrow_binding(program, stmt, scope);
     return true;
   }
   if (stmt->kind == STMT_ASSIGN) {
@@ -4359,7 +4449,7 @@ static bool check_stmt(const Program *program, const Function *fun, const Stmt *
     }
     mark_owned_move_if_needed(stmt->expr, scope, expected);
     mark_owned_target_live_if_needed(target, scope, expected);
-    update_borrow_assignment(target, stmt->expr, scope);
+    update_borrow_assignment(program, target, stmt->expr, scope);
     return true;
   }
   if (stmt->kind == STMT_CHECK) {
