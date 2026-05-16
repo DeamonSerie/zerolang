@@ -97,6 +97,17 @@ static bool origin_path_is_within(const char *path, const char *parent) {
     (strncmp(actual, prefix, prefix_len) == 0 && actual[prefix_len] == '.');
 }
 
+static bool origin_path_overlaps(const char *left, const char *right) {
+  return origin_path_is_within(left, right) || origin_path_is_within(right, left);
+}
+
+static void format_origin_place(char *out, size_t out_len, const char *root, const char *path) {
+  if (!out || out_len == 0) return;
+  const char *actual_path = origin_path_text(path);
+  const char *separator = actual_path[0] && actual_path[0] != '[' ? "." : "";
+  snprintf(out, out_len, "%.96s%s%.96s", root ? root : "", separator, actual_path);
+}
+
 static const char *origin_path_after_prefix(const char *path, const char *prefix) {
   const char *actual = origin_path_text(path);
   const char *parent = origin_path_text(prefix);
@@ -343,6 +354,31 @@ static bool scope_borrow_counts(Scope *scope, const char *name, size_t *shared, 
     }
   }
   return false;
+}
+
+static bool scope_borrow_counts_for_place(Scope *scope, const char *root, const char *path, size_t *shared, size_t *mut) {
+  if (shared) *shared = 0;
+  if (mut) *mut = 0;
+  if (!scope || !root) return false;
+  bool found = false;
+  Scope *root_scope = scope_binding_scope(scope, root);
+  for (Scope *cursor = scope; cursor; cursor = cursor->parent) {
+    for (size_t binding_index = 0; binding_index < cursor->len; binding_index++) {
+      BorrowOrigins *origins = &cursor->borrow_origins[binding_index];
+      for (size_t origin_index = 0; origin_index < origins->len; origin_index++) {
+        if (strcmp(origins->roots[origin_index], root) != 0) continue;
+        if (root_scope && origins->root_scopes[origin_index] && origins->root_scopes[origin_index] != root_scope) continue;
+        if (!origin_path_overlaps(origins->origin_paths[origin_index], path)) continue;
+        if (origins->mutable_borrow[origin_index]) {
+          if (mut) (*mut)++;
+        } else {
+          if (shared) (*shared)++;
+        }
+        found = true;
+      }
+    }
+  }
+  return found;
 }
 
 static bool scope_adjust_borrow_count_in_scope(Scope *binding_scope, const char *name, bool mut_borrow, int delta) {
@@ -1214,13 +1250,15 @@ static bool expr_reference_origins_as(const Program *program, const Expr *expr, 
   return ok;
 }
 
-static bool check_borrow_conflict(Scope *scope, const char *root, bool mut_borrow, ZDiag *diag, const Expr *expr) {
+static bool check_borrow_conflict_at(Scope *scope, const char *root, const char *path, bool mut_borrow, ZDiag *diag, const Expr *expr) {
   size_t shared = 0;
   size_t mut = 0;
-  scope_borrow_counts(scope, root, &shared, &mut);
+  scope_borrow_counts_for_place(scope, root, path, &shared, &mut);
   if (mut_borrow ? (shared > 0 || mut > 0) : (mut > 0)) {
+    char place[200];
+    format_origin_place(place, sizeof(place), root, path);
     char actual[160];
-    snprintf(actual, sizeof(actual), "%s already has %s borrow", root, mut > 0 ? "a mutable" : "shared");
+    snprintf(actual, sizeof(actual), "%.120s already has %s borrow", place, mut > 0 ? "a mutable" : "shared");
     return set_diag_detail(diag, 3029, "borrow conflicts with an active lexical borrow", expr->line, expr->column, mut_borrow ? "unborrowed mutable lvalue" : "no active mutable borrow", actual, "end the earlier borrow's scope before borrowing again");
   }
   return true;
@@ -3708,7 +3746,8 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
         return set_diag_detail(diag, 3029, "borrow requires an addressable local lvalue", expr->line, expr->column, expr->mutable_borrow ? "&mut lvalue" : "&lvalue", "temporary or unsupported expression", "borrow a local binding, field, or indexed lvalue");
       }
       char root[128];
-      if (!expr_root_ident(expr->left, root, sizeof(root)) || !scope_has(scope, root)) {
+      char path[256];
+      if (!expr_binding_path(expr->left, root, sizeof(root), path, sizeof(path)) || !scope_has(scope, root)) {
         return set_diag_detail(diag, 3003, "borrow target is not a visible local", expr->line, expr->column, "visible local binding", "unknown borrow root", "borrow a local binding that is in scope");
       }
       if (expr->mutable_borrow) {
@@ -3717,7 +3756,7 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
       } else {
         if (!check_expr(program, expr->left, scope, diag)) return false;
       }
-      if (!check_borrow_conflict(scope, root, expr->mutable_borrow, diag, expr)) return false;
+      if (!check_borrow_conflict_at(scope, root, path, expr->mutable_borrow, diag, expr)) return false;
       const char *inner_type = expr_type(program, expr->left, scope);
       char owned_inner[128];
       if (owned_inner_text(inner_type, owned_inner, sizeof(owned_inner))) inner_type = owned_inner;
@@ -3958,7 +3997,8 @@ static bool check_expr_expected(const Program *program, const Expr *expr, Scope 
               return set_diag_detail(diag, 3049, "receiver method requires an addressable receiver", receiver->line, receiver->column, "shape lvalue or ref<Self>", "temporary receiver", "store the value in a binding before calling the method");
             }
             char root[128];
-            if (expr_root_ident(receiver, root, sizeof(root)) && !check_borrow_conflict(scope, root, receiver_requires_mut, diag, receiver)) return false;
+            char path[256];
+            if (expr_binding_path(receiver, root, sizeof(root), path, sizeof(path)) && !check_borrow_conflict_at(scope, root, path, receiver_requires_mut, diag, receiver)) return false;
             char *self_arg_type = receiver_self_arg_type(receiver_type, receiver_requires_mut);
             GenericBinding *receiver_bindings = NULL;
             size_t receiver_binding_len = 0;
@@ -5096,13 +5136,16 @@ static bool function_return_borrow_origins(const Program *program, const Functio
 
 static bool check_assignment_not_borrowed(const Expr *target, Scope *scope, ZDiag *diag) {
   char root[128];
-  if (!expr_root_ident(target, root, sizeof(root))) return true;
+  char path[256];
+  if (!expr_binding_path(target, root, sizeof(root), path, sizeof(path))) return true;
   size_t shared = 0;
   size_t mut = 0;
-  scope_borrow_counts(scope, root, &shared, &mut);
+  scope_borrow_counts_for_place(scope, root, path, &shared, &mut);
   if (shared == 0 && mut == 0) return true;
+  char place[200];
+  format_origin_place(place, sizeof(place), root, path);
   char actual[256];
-  snprintf(actual, sizeof(actual), "%s has %zu shared and %zu mutable borrow(s)", root, shared, mut);
+  snprintf(actual, sizeof(actual), "%.160s has %zu shared and %zu mutable borrow(s)", place, shared, mut);
   return set_diag_detail(diag, 3029, "cannot assign to a value while it is borrowed", target->line, target->column, "unborrowed assignment target", actual, "end the borrow's lexical scope before assigning to this value");
 }
 

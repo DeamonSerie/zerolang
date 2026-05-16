@@ -296,6 +296,7 @@ for (const fixture of [
   "conformance/native/pass/owned-drop-cleanup.0",
   "conformance/native/pass/owned-drop-move-suppressed.0",
   "conformance/native/pass/borrow-primitives.0",
+  "conformance/native/pass/borrow-field-independent-assignment.0",
   "conformance/native/pass/borrow-return-param-ref.0",
   "conformance/native/pass/borrow-assignment-same-origin.0",
   "conformance/native/pass/borrow-shadowed-root-reassignment.0",
