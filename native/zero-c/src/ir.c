@@ -76,6 +76,7 @@ static Expr *clone_expr(const Expr *expr) {
   copy->moves_ownership = expr->moves_ownership;
   copy->mutable_borrow = expr->mutable_borrow;
   copy->bool_value = expr->bool_value;
+  copy->array_repeat = expr->array_repeat;
   copy->left = clone_expr(expr->left);
   copy->right = clone_expr(expr->right);
   for (size_t i = 0; i < expr->args.len; i++) push_expr_clone(&copy->args, expr->args.items[i]);
@@ -149,6 +150,10 @@ static IrTypeKind ir_type_kind(const char *type) {
   if (strcmp(type, "Duration") == 0) return IR_TYPE_I64;
   if (strcmp(type, "RandSource") == 0) return IR_TYPE_U32;
   if (strcmp(type, "ProcStatus") == 0) return IR_TYPE_I32;
+  if (strcmp(type, "Net") == 0 || strcmp(type, "HttpClient") == 0) return IR_TYPE_I32;
+  if (strcmp(type, "HttpResult") == 0) return IR_TYPE_U64;
+  if (strcmp(type, "HttpError") == 0) return IR_TYPE_U32;
+  if (strcmp(type, "HttpHeaderValue") == 0) return IR_TYPE_U64;
   if (strcmp(type, "Fs") == 0 || strcmp(type, "File") == 0 || strcmp(type, "owned<File>") == 0) return IR_TYPE_I32;
   if (strcmp(type, "String") == 0 ||
       strcmp(type, "Span<u8>") == 0 ||
@@ -162,13 +167,30 @@ static IrTypeKind ir_type_kind(const char *type) {
   if (strcmp(type, "Vec") == 0) return IR_TYPE_VEC;
   if (strcmp(type, "BufferedReader") == 0 || strcmp(type, "BufferedWriter") == 0) return IR_TYPE_BYTE_VIEW;
   if (strcmp(type, "Maybe<MutSpan<u8>>") == 0 || strcmp(type, "Maybe<String>") == 0 || strcmp(type, "Maybe<owned<ByteBuf>>") == 0) return IR_TYPE_MAYBE_BYTE_VIEW;
-  if (strcmp(type, "Maybe<u8>") == 0 ||
+  if (strcmp(type, "Maybe<JsonDoc>") == 0 ||
+      strcmp(type, "Maybe<u8>") == 0 ||
       strcmp(type, "Maybe<u16>") == 0 ||
       strcmp(type, "Maybe<usize>") == 0 ||
       strcmp(type, "Maybe<i32>") == 0 ||
       strcmp(type, "Maybe<u32>") == 0 ||
       strcmp(type, "Maybe<owned<File>>") == 0) return IR_TYPE_MAYBE_SCALAR;
   return IR_TYPE_UNSUPPORTED;
+}
+
+static int ir_std_http_error_code(const char *name) {
+  if (!name) return -1;
+  if (strcmp(name, "std.http.errorNone") == 0) return 0;
+  if (strcmp(name, "std.http.errorInvalidUrl") == 0) return 1;
+  if (strcmp(name, "std.http.errorUnsupportedProtocol") == 0) return 2;
+  if (strcmp(name, "std.http.errorDns") == 0) return 3;
+  if (strcmp(name, "std.http.errorConnect") == 0) return 4;
+  if (strcmp(name, "std.http.errorTls") == 0) return 5;
+  if (strcmp(name, "std.http.errorTimeout") == 0) return 6;
+  if (strcmp(name, "std.http.errorTooLarge") == 0) return 7;
+  if (strcmp(name, "std.http.errorProviderUnavailable") == 0) return 8;
+  if (strcmp(name, "std.http.errorIo") == 0) return 9;
+  if (strcmp(name, "std.http.errorInvalidRequest") == 0) return 10;
+  return -1;
 }
 
 static bool ir_type_is_value(IrTypeKind type) {
@@ -789,6 +811,11 @@ static bool ir_expr_is_byte_view_source(const Expr *expr) {
     bool is_span = callee && (strcmp(callee, "std.mem.span") == 0 || strcmp(callee, "std.mem.bufBytes") == 0);
     free(callee);
     if (is_span) return true;
+  }
+  if (expr && expr->resolved_type) {
+    unsigned array_len = 0;
+    IrTypeKind element_type = IR_TYPE_UNSUPPORTED;
+    if (ir_parse_fixed_array_type(expr->resolved_type, &array_len, &element_type) && element_type == IR_TYPE_U8) return true;
   }
   return expr && (expr->kind == EXPR_STRING || expr->kind == EXPR_SLICE ||
                   expr->kind == EXPR_BORROW ||
@@ -1513,6 +1540,208 @@ static bool ir_lower_expr(const Program *program, IrProgram *ir, const IrFunctio
         IrValue *value = ir_new_value(ir, IR_VALUE_BYTE_VIEW_EQ, IR_TYPE_BOOL, expr->line, expr->column);
         value->left = left;
         value->right = right;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if ((strcmp(callee_name, "std.json.validateBytes") == 0 ||
+           strcmp(callee_name, "std.json.streamTokensBytes") == 0) &&
+          expr->args.len == 1) {
+        IrValue *view = NULL;
+        if (!ir_lower_byte_view(program, ir, fun, expr->args.items[0], &view)) {
+          free(callee_name);
+          return false;
+        }
+        IrValueKind kind = strcmp(callee_name, "std.json.validateBytes") == 0 ? IR_VALUE_JSON_VALIDATE_BYTES : IR_VALUE_JSON_STREAM_TOKENS_BYTES;
+        IrTypeKind type = kind == IR_VALUE_JSON_VALIDATE_BYTES ? IR_TYPE_BOOL : IR_TYPE_USIZE;
+        IrValue *value = ir_new_value(ir, kind, type, expr->line, expr->column);
+        value->left = view;
+        if (ir->direct_runtime_helper_count < 1) ir->direct_runtime_helper_count = 1;
+        if (ir->direct_host_runtime_import_count < 1) ir->direct_host_runtime_import_count = 1;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if (strcmp(callee_name, "std.json.parseBytes") == 0 && expr->args.len == 2) {
+        IrValue *view = NULL;
+        if (!ir_lower_byte_view(program, ir, fun, expr->args.items[1], &view)) {
+          free(callee_name);
+          return false;
+        }
+        IrValue *value = ir_new_value(ir, IR_VALUE_JSON_PARSE_BYTES, IR_TYPE_I64, expr->line, expr->column);
+        value->left = view;
+        if (ir->direct_runtime_helper_count < 1) ir->direct_runtime_helper_count = 1;
+        if (ir->direct_host_runtime_import_count < 1) ir->direct_host_runtime_import_count = 1;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if (strcmp(callee_name, "std.net.host") == 0 && expr->args.len == 0) {
+        IrValue *value = ir_new_value(ir, IR_VALUE_INT, IR_TYPE_I32, expr->line, expr->column);
+        value->int_value = 1;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      int http_error_code = ir_std_http_error_code(callee_name);
+      if (http_error_code >= 0 && expr->args.len == 0) {
+        IrValue *value = ir_new_value(ir, IR_VALUE_INT, IR_TYPE_U32, expr->line, expr->column);
+        value->int_value = (unsigned long long)http_error_code;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if (strcmp(callee_name, "std.http.client") == 0 && expr->args.len == 1) {
+        IrValue *net = NULL;
+        if (!ir_lower_expr(program, ir, fun, expr->args.items[0], &net)) {
+          free(callee_name);
+          return false;
+        }
+        ir_free_value(net);
+        IrValue *value = ir_new_value(ir, IR_VALUE_INT, IR_TYPE_I32, expr->line, expr->column);
+        value->int_value = 1;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if (strcmp(callee_name, "std.http.fetch") == 0 && expr->args.len == 4) {
+        IrValue *client = NULL;
+        IrValue *request = NULL;
+        IrValue *response = NULL;
+        IrValue *timeout = NULL;
+        if (!ir_lower_expr(program, ir, fun, expr->args.items[0], &client) ||
+            !ir_lower_byte_view(program, ir, fun, expr->args.items[1], &request) ||
+            !ir_lower_byte_view(program, ir, fun, expr->args.items[2], &response) ||
+            !ir_lower_expr(program, ir, fun, expr->args.items[3], &timeout)) {
+          ir_free_value(client);
+          ir_free_value(request);
+          ir_free_value(response);
+          ir_free_value(timeout);
+          free(callee_name);
+          return false;
+        }
+        ir_free_value(client);
+        if (timeout->type != IR_TYPE_I64) {
+          ir_free_value(request);
+          ir_free_value(response);
+          ir_free_value(timeout);
+          free(callee_name);
+          ir_mark_unsupported(ir, "direct backend std.http.fetch timeout must be a Duration", expr->args.items[3]->line, expr->args.items[3]->column, "non-Duration timeout");
+          return false;
+        }
+        IrValue *value = ir_new_value(ir, IR_VALUE_HTTP_FETCH, IR_TYPE_U64, expr->line, expr->column);
+        value->left = request;
+        value->right = response;
+        value->index = timeout;
+        if (ir->direct_runtime_helper_count < 2) ir->direct_runtime_helper_count = 2;
+        if (ir->direct_host_runtime_import_count < 2) ir->direct_host_runtime_import_count = 2;
+        if (ir->direct_http_runtime_import_count < 1) ir->direct_http_runtime_import_count = 1;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if ((strcmp(callee_name, "std.http.resultOk") == 0 ||
+           strcmp(callee_name, "std.http.resultStatus") == 0 ||
+           strcmp(callee_name, "std.http.resultBodyLen") == 0 ||
+           strcmp(callee_name, "std.http.resultError") == 0) && expr->args.len == 1) {
+        IrValue *result = NULL;
+        if (!ir_lower_expr(program, ir, fun, expr->args.items[0], &result)) {
+          free(callee_name);
+          return false;
+        }
+        if (result->type != IR_TYPE_U64) {
+          ir_free_value(result);
+          free(callee_name);
+          ir_mark_unsupported(ir, "direct backend HTTP result helper expects HttpResult", expr->args.items[0]->line, expr->args.items[0]->column, "non-HttpResult argument");
+          return false;
+        }
+        IrValueKind kind = IR_VALUE_HTTP_RESULT_ERROR;
+        IrTypeKind type = IR_TYPE_U32;
+        if (strcmp(callee_name, "std.http.resultOk") == 0) {
+          kind = IR_VALUE_HTTP_RESULT_OK;
+          type = IR_TYPE_BOOL;
+        } else if (strcmp(callee_name, "std.http.resultStatus") == 0) {
+          kind = IR_VALUE_HTTP_RESULT_STATUS;
+          type = IR_TYPE_U16;
+        } else if (strcmp(callee_name, "std.http.resultBodyLen") == 0) {
+          kind = IR_VALUE_HTTP_RESULT_BODY_LEN;
+          type = IR_TYPE_USIZE;
+        }
+        IrValue *value = ir_new_value(ir, kind, type, expr->line, expr->column);
+        value->left = result;
+        if (ir->direct_runtime_helper_count < 1) ir->direct_runtime_helper_count = 1;
+        if (ir->direct_host_runtime_import_count < 1) ir->direct_host_runtime_import_count = 1;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if ((strcmp(callee_name, "std.http.responseLen") == 0 ||
+           strcmp(callee_name, "std.http.responseHeadersLen") == 0 ||
+           strcmp(callee_name, "std.http.responseBodyOffset") == 0) && expr->args.len == 1) {
+        IrValue *response = NULL;
+        if (!ir_lower_byte_view(program, ir, fun, expr->args.items[0], &response)) {
+          free(callee_name);
+          return false;
+        }
+        IrValueKind kind = IR_VALUE_HTTP_RESPONSE_LEN;
+        if (strcmp(callee_name, "std.http.responseHeadersLen") == 0) {
+          kind = IR_VALUE_HTTP_RESPONSE_HEADERS_LEN;
+        } else if (strcmp(callee_name, "std.http.responseBodyOffset") == 0) {
+          kind = IR_VALUE_HTTP_RESPONSE_BODY_OFFSET;
+        }
+        IrValue *value = ir_new_value(ir, kind, IR_TYPE_USIZE, expr->line, expr->column);
+        value->left = response;
+        if (ir->direct_runtime_helper_count < 1) ir->direct_runtime_helper_count = 1;
+        if (ir->direct_host_runtime_import_count < 1) ir->direct_host_runtime_import_count = 1;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if (strcmp(callee_name, "std.http.headerValue") == 0 && expr->args.len == 2) {
+        IrValue *headers = NULL;
+        IrValue *name = NULL;
+        if (!ir_lower_byte_view(program, ir, fun, expr->args.items[0], &headers) ||
+            !ir_lower_byte_view(program, ir, fun, expr->args.items[1], &name)) {
+          ir_free_value(headers);
+          ir_free_value(name);
+          free(callee_name);
+          return false;
+        }
+        IrValue *value = ir_new_value(ir, IR_VALUE_HTTP_HEADER_VALUE, IR_TYPE_U64, expr->line, expr->column);
+        value->left = headers;
+        value->right = name;
+        if (ir->direct_runtime_helper_count < 1) ir->direct_runtime_helper_count = 1;
+        if (ir->direct_host_runtime_import_count < 1) ir->direct_host_runtime_import_count = 1;
+        free(callee_name);
+        *out = value;
+        return true;
+      }
+      if ((strcmp(callee_name, "std.http.headerFound") == 0 ||
+           strcmp(callee_name, "std.http.headerOffset") == 0 ||
+           strcmp(callee_name, "std.http.headerLen") == 0) && expr->args.len == 1) {
+        IrValue *header = NULL;
+        if (!ir_lower_expr(program, ir, fun, expr->args.items[0], &header)) {
+          free(callee_name);
+          return false;
+        }
+        if (header->type != IR_TYPE_U64) {
+          ir_free_value(header);
+          free(callee_name);
+          ir_mark_unsupported(ir, "direct backend HTTP header helper expects HttpHeaderValue", expr->args.items[0]->line, expr->args.items[0]->column, "non-HttpHeaderValue argument");
+          return false;
+        }
+        IrValueKind kind = IR_VALUE_HTTP_HEADER_LEN;
+        IrTypeKind type = IR_TYPE_USIZE;
+        if (strcmp(callee_name, "std.http.headerFound") == 0) {
+          kind = IR_VALUE_HTTP_HEADER_FOUND;
+          type = IR_TYPE_BOOL;
+        } else if (strcmp(callee_name, "std.http.headerOffset") == 0) {
+          kind = IR_VALUE_HTTP_HEADER_OFFSET;
+        }
+        IrValue *value = ir_new_value(ir, kind, type, expr->line, expr->column);
+        value->left = header;
+        if (ir->direct_runtime_helper_count < 1) ir->direct_runtime_helper_count = 1;
+        if (ir->direct_host_runtime_import_count < 1) ir->direct_host_runtime_import_count = 1;
         free(callee_name);
         *out = value;
         return true;
@@ -2354,6 +2583,29 @@ static bool ir_lower_array_initializer(const Program *program, IrProgram *ir, Ir
   if (!expr || expr->kind != EXPR_ARRAY_LITERAL) {
     ir_mark_unsupported(ir, "direct backend fixed array locals require array literal initialization", line, column, local ? local->name : "array local");
     return false;
+  }
+  if (expr->array_repeat) {
+    if (expr->args.len != 2) {
+      ir_mark_unsupported(ir, "direct backend fixed array repeat literal requires value and count", line, column, local->name);
+      return false;
+    }
+    const Expr *value_expr = expr->args.items[0];
+    for (size_t i = 0; i < local->array_len; i++) {
+      IrValue *index = ir_new_index_literal(ir, (unsigned)i, value_expr->line, value_expr->column);
+      IrValue *value = NULL;
+      if (!ir_lower_expr(program, ir, mir_fun, value_expr, &value)) {
+        ir_free_value(index);
+        return false;
+      }
+      if (value->type != local->element_type) {
+        ir_free_value(index);
+        ir_free_value(value);
+        ir_mark_unsupported(ir, "direct backend array repeat literal element type does not match local type", value_expr->line, value_expr->column, local->name);
+        return false;
+      }
+      ir_instr_vec_push(ir, out_items, out_len, out_cap, (IrInstr){.kind = IR_INSTR_INDEX_STORE, .array_index = local->index, .index = index, .value = value, .line = value_expr->line, .column = value_expr->column});
+    }
+    return true;
   }
   if (expr->args.len != local->array_len) {
     ir_mark_unsupported(ir, "direct backend fixed array literal length must match local type", line, column, local->name);

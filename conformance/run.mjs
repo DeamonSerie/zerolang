@@ -247,9 +247,15 @@ for (const fixture of [
   "conformance/native/pass/std-fs-breadth.0",
   "conformance/native/pass/std-path-io-breadth.0",
   "conformance/native/pass/std-net-http-breadth.0",
+  "conformance/native/pass/std-http-metadata-neutral.0",
+  "conformance/native/pass/std-http-fetch.0",
+  "conformance/native/pass/std-http-errors.0",
+  "conformance/native/pass/std-http-response-helpers.0",
   "conformance/native/pass/std-data-formats.0",
+  "conformance/native/pass/std-json-bytes.0",
   "conformance/native/pass/std-platform-basics.0",
   "conformance/native/pass/std-mem-arrays.0",
+  "conformance/native/pass/array-repeat-literal.0",
   "conformance/native/pass/integer-widths.0",
   "conformance/native/pass/std-codec-widths.0",
   "conformance/native/pass/parse-integers.0",
@@ -648,12 +654,15 @@ const directMachODataRelocOffset = directMachODataBytes.readUInt32LE(directMachO
 const directMachODataRelocCount = directMachODataBytes.readUInt32LE(directMachODataSection + 60);
 assert(directMachODataRelocOffset > 0);
 assert(directMachODataRelocCount > 0);
-let sawMachOUnsignedReloc = false;
+let sawMachOPageReloc = false;
+let sawMachOPageoffReloc = false;
 for (let i = 0; i < directMachODataRelocCount; i++) {
   const info = directMachODataBytes.readUInt32LE(directMachODataRelocOffset + i * 8 + 4);
-  sawMachOUnsignedReloc ||= ((info >>> 28) & 15) === 0;
+  sawMachOPageReloc ||= ((info >>> 28) & 15) === 3;
+  sawMachOPageoffReloc ||= ((info >>> 28) & 15) === 4;
 }
-assert.equal(sawMachOUnsignedReloc, true);
+assert.equal(sawMachOPageReloc, true);
+assert.equal(sawMachOPageoffReloc, true);
 
 const directCoffObjOut = `${outDir}/direct-call-add-win-x64.obj`;
 const directCoffObjJson = await execFileAsync(zero, ["build", "--json", "--emit", "obj", "--target", "win32-x64.exe", "examples/direct-call-add.0", "--out", directCoffObjOut]);
@@ -1498,7 +1507,7 @@ const explainTar002 = await execFileAsync(zero, ["explain", "--json", "TAR002"])
 const explainTar002Body = JSON.parse(explainTar002.stdout);
 assert.equal(explainTar002Body.schemaVersion, 1);
 assert.equal(explainTar002Body.code, "TAR002");
-assert.equal(explainTar002Body.repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(explainTar002Body.repair.id, "choose-target-with-required-capability");
 
 const explainText = await execFileAsync(zero, ["explain", "TYP009"]);
 assert.match(explainText.stdout, /Mutable storage required/);
@@ -1707,6 +1716,9 @@ assert.equal(linuxMuslTarget.directBackend.exeSupported, true);
 assert.equal(linuxMuslTarget.directBackend.objectEmitter, "zero-elf64");
 assert.equal(linuxMuslTarget.directBackend.exeEmitter, "zero-elf64-exe");
 assert.equal(linuxMuslTarget.directBackend.explicitDirectFallback, "never-c-bridge");
+assert.equal(linuxMuslTarget.httpRuntime.status, "unsupported");
+assert.equal(linuxMuslTarget.httpRuntime.provider, null);
+assert.match(linuxMuslTarget.httpRuntime.reason, /lacks net/i);
 assert.equal(windowsMsvcTarget.objectFormat, "coff");
 assert.equal(windowsMsvcTarget.libcFacts.mode, "sysroot");
 assert.equal(windowsMsvcTarget.libcFacts.sysrootStatus, "missing");
@@ -1722,6 +1734,11 @@ assert.equal(linuxGnuTarget.directBackend.objectEmitter, "zero-elf64");
 assert.equal(darwinArm64Target.directBackend.objectEmitter, "zero-macho64");
 assert.equal(darwinArm64Target.directBackend.exeSupported, true);
 assert.equal(darwinArm64Target.directBackend.exeEmitter, "zero-macho64-exe");
+assert.equal(darwinArm64Target.httpRuntime.provider, targetsBody.host === "darwin-arm64" ? "curl" : null);
+assert.equal(darwinArm64Target.httpRuntime.tlsVerification, targetsBody.host === "darwin-arm64");
+if (targetsBody.host === "darwin-arm64") {
+  assert.equal(darwinArm64Target.httpRuntime.customCa.env, "ZERO_HTTP_TEST_CA_BUNDLE");
+}
 assert.equal(linuxArm64Target.directBackend.status, "native-exe");
 assert.equal(linuxArm64Target.directBackend.objectEmitter, "zero-elf-aarch64");
 assert.equal(linuxArm64Target.directBackend.exeEmitter, "zero-elf-aarch64-exe");
@@ -1738,15 +1755,15 @@ assert.match(targetUnsupportedBody.diagnostics[0].expected, /Fs capability/);
 assert.match(targetUnsupportedBody.diagnostics[0].actual, /wasm32-web lacks Fs/);
 assert.match(targetUnsupportedBody.diagnostics[0].help, /remove hosted std\.fs/);
 assert.equal(targetUnsupportedBody.diagnostics[0].fixSafety, "requires-human-review");
-assert.equal(targetUnsupportedBody.diagnostics[0].repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(targetUnsupportedBody.diagnostics[0].repair.id, "choose-target-with-required-capability");
 assert.match(targetUnsupportedBody.diagnostics[0].related[0].message, /lacks Fs/);
 
 const targetUnsupportedFixPlan = await execFileAsync(zero, ["fix", "--plan", "--json", "--target", "wasm32-web", "conformance/native/fail/std-fs-target-unsupported.0"]);
 const targetUnsupportedFixPlanBody = JSON.parse(targetUnsupportedFixPlan.stdout);
-assert.equal(targetUnsupportedFixPlanBody.fixes[0].id, "remove-hosted-fs-or-use-host-target");
+assert.equal(targetUnsupportedFixPlanBody.fixes[0].id, "choose-target-with-required-capability");
 assert.equal(targetUnsupportedFixPlanBody.fixes[0].diagnosticCode, "TAR002");
 assert.equal(targetUnsupportedFixPlanBody.fixes[0].safety, "requires-human-review");
-assert.equal(targetUnsupportedFixPlanBody.diagnostics[0].repair.id, "remove-hosted-fs-or-use-host-target");
+assert.equal(targetUnsupportedFixPlanBody.diagnostics[0].repair.id, "choose-target-with-required-capability");
 
 const targetNetUnsupportedJson = await execFileAsync(zero, ["check", "--json", "--target", "linux-musl-x64", "conformance/check/fail/target-net-unsupported.0"]).catch((error) => error);
 assert.notEqual(targetNetUnsupportedJson.code, 0);
@@ -2307,6 +2324,14 @@ assert.match(unknownEnumCase.stderr, /VAR001/);
 const badStdCall = await execFileAsync(zero, ["check", "conformance/native/fail/bad-std-call.0"]).catch((error) => error);
 assert.notEqual(badStdCall.code, 0);
 assert.match(badStdCall.stderr, /STD002/);
+
+const stdHttpErrorRawInt = await execFileAsync(zero, ["check", "conformance/native/fail/std-http-error-raw-int.0"]).catch((error) => error);
+assert.notEqual(stdHttpErrorRawInt.code, 0);
+assert.match(stdHttpErrorRawInt.stderr, /TYP002/);
+
+const stdHttpFetchRawTimeout = await execFileAsync(zero, ["check", "conformance/native/fail/std-http-fetch-raw-timeout.0"]).catch((error) => error);
+assert.notEqual(stdHttpFetchRawTimeout.code, 0);
+assert.match(stdHttpFetchRawTimeout.stderr, /STD003/);
 
 const genericMemLenNonSpan = await execFileAsync(zero, ["check", "conformance/native/fail/generic-mem-len-non-span.0"]).catch((error) => error);
 assert.notEqual(genericMemLenNonSpan.code, 0);

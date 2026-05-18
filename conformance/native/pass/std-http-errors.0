@@ -1,0 +1,8 @@
+export c fun main() -> i32 {
+    if std.http.errorNone() == std.http.errorNone() &&
+        std.http.errorTls() != std.http.errorTimeout() &&
+        std.http.errorInvalidRequest() != std.http.errorUnsupportedProtocol() {
+        return 0
+    }
+    return 1
+}
