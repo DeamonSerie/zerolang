@@ -69,6 +69,8 @@ struct Scope {
   bool *mutable;
   bool *moved;
   bool *is_param;
+  int *decl_line;
+  int *decl_column;
   ValueProvenance *value_provenance;
   size_t len;
   size_t cap;
@@ -449,7 +451,7 @@ ZMetaCacheStats z_meta_cache_stats(void) {
   return meta_stats;
 }
 
-static void scope_add_ex(Scope *scope, const char *name, const char *type, bool mutable, bool is_param) {
+static void scope_add_ex(Scope *scope, const char *name, const char *type, bool mutable, bool is_param, int line, int column) {
   if (scope->len + 1 > scope->cap) {
     scope->cap = scope->cap == 0 ? 8 : scope->cap * 2;
     scope->names = realloc(scope->names, scope->cap * sizeof(char *));
@@ -457,6 +459,8 @@ static void scope_add_ex(Scope *scope, const char *name, const char *type, bool 
     scope->mutable = realloc(scope->mutable, scope->cap * sizeof(bool));
     scope->moved = realloc(scope->moved, scope->cap * sizeof(bool));
     scope->is_param = realloc(scope->is_param, scope->cap * sizeof(bool));
+    scope->decl_line = realloc(scope->decl_line, scope->cap * sizeof(int));
+    scope->decl_column = realloc(scope->decl_column, scope->cap * sizeof(int));
     scope->value_provenance = realloc(scope->value_provenance, scope->cap * sizeof(ValueProvenance));
   }
   scope->names[scope->len++] = z_strdup(name);
@@ -464,15 +468,21 @@ static void scope_add_ex(Scope *scope, const char *name, const char *type, bool 
   scope->mutable[scope->len - 1] = mutable;
   scope->moved[scope->len - 1] = false;
   scope->is_param[scope->len - 1] = is_param;
+  scope->decl_line[scope->len - 1] = line;
+  scope->decl_column[scope->len - 1] = column;
   scope->value_provenance[scope->len - 1] = (ValueProvenance){0};
 }
 
 static void scope_add(Scope *scope, const char *name, const char *type, bool mutable) {
-  scope_add_ex(scope, name, type, mutable, false);
+  scope_add_ex(scope, name, type, mutable, false, 0, 0);
 }
 
-static void scope_add_param(Scope *scope, const char *name, const char *type) {
-  scope_add_ex(scope, name, type, false, true);
+static void scope_add_decl(Scope *scope, const char *name, const char *type, bool mutable, int line, int column) {
+  scope_add_ex(scope, name, type, mutable, false, line, column);
+}
+
+static void scope_add_param_decl(Scope *scope, const char *name, const char *type, int line, int column) {
+  scope_add_ex(scope, name, type, false, true, line, column);
 }
 
 static bool scope_has(Scope *scope, const char *name) {
@@ -591,6 +601,55 @@ static bool scope_borrow_counts_for_place(Scope *scope, const char *root, const 
     }
   }
   return found;
+}
+
+typedef struct {
+  char root[128];
+  char path[256];
+  char kind[16];
+  char binding[128];
+  int binding_line;
+  int binding_column;
+} ActiveBorrowTrace;
+
+static bool scope_active_borrow_for_place(Scope *scope, const char *root, const char *path, bool prefer_mutable, ActiveBorrowTrace *out) {
+  if (!scope || !root || !out) return false;
+  *out = (ActiveBorrowTrace){0};
+  bool found = false;
+  Scope *root_scope = scope_binding_scope(scope, root);
+  for (Scope *cursor = scope; cursor; cursor = cursor->parent) {
+    for (size_t binding_index = 0; binding_index < cursor->len; binding_index++) {
+      ValueProvenance *origins = &cursor->value_provenance[binding_index];
+      for (size_t origin_index = 0; origin_index < origins->len; origin_index++) {
+        ProvenanceEntry *entry = &origins->items[origin_index];
+        if (strcmp(entry->origin.root, root) != 0) continue;
+        if (root_scope && entry->origin.root_scope && entry->origin.root_scope != root_scope) continue;
+        if (!origin_path_overlaps(entry->origin.path, path)) continue;
+        if (found && (!prefer_mutable || strcmp(out->kind, "mutable") == 0 || !entry->mutable_borrow)) continue;
+        snprintf(out->root, sizeof(out->root), "%s", entry->origin.root);
+        snprintf(out->path, sizeof(out->path), "%s", origin_path_text(entry->origin.path));
+        snprintf(out->kind, sizeof(out->kind), "%s", entry->mutable_borrow ? "mutable" : "shared");
+        snprintf(out->binding, sizeof(out->binding), "%s", cursor->names[binding_index]);
+        out->binding_line = cursor->decl_line ? cursor->decl_line[binding_index] : 0;
+        out->binding_column = cursor->decl_column ? cursor->decl_column[binding_index] : 0;
+        found = true;
+        if (!prefer_mutable || entry->mutable_borrow) return true;
+      }
+    }
+  }
+  return found;
+}
+
+static void set_diag_borrow_trace(ZDiag *diag, const char *root, const char *path, const ActiveBorrowTrace *active, const char *repair) {
+  if (!diag || !root || !active || !active->root[0]) return;
+  snprintf(diag->borrow_root, sizeof(diag->borrow_root), "%s", active->root);
+  snprintf(diag->borrow_path, sizeof(diag->borrow_path), "%s", active->path);
+  snprintf(diag->borrow_kind, sizeof(diag->borrow_kind), "%s", active->kind);
+  snprintf(diag->borrow_binding, sizeof(diag->borrow_binding), "%s", active->binding);
+  snprintf(diag->borrow_repair, sizeof(diag->borrow_repair), "%s", repair ? repair : "end the active lexical borrow before the conflicting operation");
+  diag->borrow_binding_line = active->binding_line;
+  diag->borrow_binding_column = active->binding_column;
+  (void)path;
 }
 
 static void scope_clear_value_provenance_at(ValueProvenance *origins) {
@@ -783,6 +842,8 @@ static void scope_free(Scope *scope) {
   free(scope->mutable);
   free(scope->moved);
   free(scope->is_param);
+  free(scope->decl_line);
+  free(scope->decl_column);
   free(scope->value_provenance);
 }
 
@@ -1549,7 +1610,12 @@ static bool check_borrow_conflict_at(Scope *scope, const char *root, const char 
     format_origin_place(place, sizeof(place), root, path);
     char actual[160];
     snprintf(actual, sizeof(actual), "%.120s already has %s borrow", place, mut > 0 ? "a mutable" : "shared");
-    return set_diag_detail(diag, 3029, "borrow conflicts with an active lexical borrow", expr->line, expr->column, mut_borrow ? "unborrowed mutable lvalue" : "no active mutable borrow", actual, "end the earlier borrow's scope before borrowing again");
+    set_diag_detail(diag, 3029, "borrow conflicts with an active lexical borrow", expr->line, expr->column, mut_borrow ? "unborrowed mutable lvalue" : "no active mutable borrow", actual, "end the earlier borrow's scope before borrowing again");
+    ActiveBorrowTrace active = {0};
+    if (scope_active_borrow_for_place(scope, root, path, mut > 0, &active)) {
+      set_diag_borrow_trace(diag, root, path, &active, "move the conflicting borrow after the active borrow's lexical scope or put the earlier borrow in an inner block");
+    }
+    return false;
   }
   return true;
 }
@@ -1583,7 +1649,12 @@ static bool check_read_not_mutably_borrowed(const Expr *expr, Scope *scope, ZDia
   format_origin_place(place, sizeof(place), root, path);
   char actual_detail[200];
   snprintf(actual_detail, sizeof(actual_detail), "%.160s has an active mutable borrow", place);
-  return set_diag_detail(diag, 3029, "cannot read a value while it is mutably borrowed", expr->line, expr->column, "unborrowed value or shared borrow only", actual_detail, "end the mutable borrow's lexical scope before reading the value");
+  set_diag_detail(diag, 3029, "cannot read a value while it is mutably borrowed", expr->line, expr->column, "unborrowed value or shared borrow only", actual_detail, "end the mutable borrow's lexical scope before reading the value");
+  ActiveBorrowTrace active = {0};
+  if (scope_active_borrow_for_place(scope, root, path, true, &active)) {
+    set_diag_borrow_trace(diag, root, path, &active, "move the read after the mutable borrow's lexical scope or put the mutable borrow in an inner block");
+  }
+  return false;
 }
 
 static bool check_place_index_exprs(const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
@@ -2340,7 +2411,7 @@ static void flow_scope_add_function_bindings(const Function *fun, Scope *scope) 
   }
   for (size_t param_index = 0; param_index < fun->params.len; param_index++) {
     const Param *param = &fun->params.items[param_index];
-    scope_add_param(scope, param->name, param->type);
+    scope_add_param_decl(scope, param->name, param->type, param->line, param->column);
   }
 }
 
@@ -6326,7 +6397,7 @@ static bool function_provenance_summary(const Program *program, const Function *
     const Param *param = &fun->params.items[param_index];
     if (param->name) {
       char *param_type = return_provenance_type_text(param->type, bindings, binding_len);
-      scope_add_param(&scope, param->name, param_type ? param_type : "Unknown");
+      scope_add_param_decl(&scope, param->name, param_type ? param_type : "Unknown", param->line, param->column);
       if (type_is_named_generic(param_type, "mutref")) {
         seed_param_storage_value_provenance(program, &scope, param->name, param_type ? param_type : "Unknown");
       }
@@ -6723,7 +6794,12 @@ static bool check_assignment_not_borrowed(const Expr *target, Scope *scope, ZDia
   format_origin_place(place, sizeof(place), root, path);
   char actual[256];
   snprintf(actual, sizeof(actual), "%.160s has %zu shared and %zu mutable borrow(s)", place, shared, mut);
-  return set_diag_detail(diag, 3029, "cannot assign to a value while it is borrowed", target->line, target->column, "unborrowed assignment target", actual, "end the borrow's lexical scope before assigning to this value");
+  set_diag_detail(diag, 3029, "cannot assign to a value while it is borrowed", target->line, target->column, "unborrowed assignment target", actual, "end the borrow's lexical scope before assigning to this value");
+  ActiveBorrowTrace active = {0};
+  if (scope_active_borrow_for_place(scope, root, path, mut > 0, &active)) {
+    set_diag_borrow_trace(diag, root, path, &active, "move the assignment after the active borrow's lexical scope or put the borrow in an inner block");
+  }
+  return false;
 }
 
 static bool check_return_borrow_escape(const Program *program, const Expr *expr, Scope *scope, ZDiag *diag) {
@@ -6925,7 +7001,7 @@ static bool check_stmt(const Program *program, const Function *fun, const Stmt *
     const char *binding_type = stmt->type ? stmt->type : actual;
     mark_owned_move_if_needed(stmt->expr, scope, binding_type);
     set_stmt_resolved_type(stmt, binding_type);
-    scope_add(scope, stmt->name, binding_type, stmt->mutable_binding);
+    scope_add_decl(scope, stmt->name, binding_type, stmt->mutable_binding, stmt->line, stmt->column);
     register_borrow_binding(program, stmt, scope);
     return true;
   }
@@ -7248,7 +7324,7 @@ static bool check_shape_method_body(const Program *program, const Shape *shape, 
   }
   for (size_t i = 0; i < method->params.len; i++) {
     char *param_type = type_substitute_generic(method->params.items[i].type, bindings, binding_len);
-    scope_add_param(&scope, method->params.items[i].name, param_type);
+    scope_add_param_decl(&scope, method->params.items[i].name, param_type, method->params.items[i].line, method->params.items[i].column);
     free(param_type);
   }
   for (size_t shape_index = 0; shape_index < program->shapes.len; shape_index++) scope_add(&scope, program->shapes.items[shape_index].name, "Type", false);
@@ -7775,7 +7851,7 @@ bool z_check_program(const Program *program, ZDiag *diag) {
           return set_diag_detail(diag, 3001, "duplicate parameter", param->line, param->column, "unique parameter name", "parameter name already declared", "rename one parameter");
         }
       }
-      scope_add_param(&scope, param->name, param->type);
+      scope_add_param_decl(&scope, param->name, param->type, param->line, param->column);
     }
     for (size_t shape_index = 0; shape_index < program->shapes.len; shape_index++) scope_add(&scope, program->shapes.items[shape_index].name, "Type", false);
     for (size_t interface_index = 0; interface_index < program->interfaces.len; interface_index++) scope_add(&scope, program->interfaces.items[interface_index].name, "Type", false);

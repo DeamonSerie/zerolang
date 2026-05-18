@@ -469,6 +469,20 @@ assert.notEqual(agentSurfaceBorrowLifetime.code, 0);
 const agentSurfaceBorrowLifetimeBody = JSON.parse(agentSurfaceBorrowLifetime.stdout);
 assert.equal(agentSurfaceBorrowLifetimeBody.diagnostics[0].code, "BOR001");
 assert.match(agentSurfaceBorrowLifetimeBody.diagnostics[0].actual, /data already has shared borrow/);
+assert.equal(agentSurfaceBorrowLifetimeBody.diagnostics[0].repair.id, "end-conflicting-borrow");
+assert.equal(agentSurfaceBorrowLifetimeBody.diagnostics[0].borrowTrace.rule, "lexical");
+assert.equal(agentSurfaceBorrowLifetimeBody.diagnostics[0].borrowTrace.activeBorrows[0].root, "data");
+assert.equal(agentSurfaceBorrowLifetimeBody.diagnostics[0].borrowTrace.activeBorrows[0].path, "");
+assert.equal(agentSurfaceBorrowLifetimeBody.diagnostics[0].borrowTrace.activeBorrows[0].kind, "shared");
+assert.equal(agentSurfaceBorrowLifetimeBody.diagnostics[0].borrowTrace.activeBorrows[0].binding, "shared");
+assert.equal(agentSurfaceBorrowLifetimeBody.diagnostics[0].borrowTrace.activeBorrows[0].bindingDecl.line, 12);
+assert.match(agentSurfaceBorrowLifetimeBody.diagnostics[0].borrowTrace.repair, /inner block|lexical scope/);
+
+const agentSurfaceBorrowExplain = await execFileAsync(zero, ["explain", "--json", "BOR001"]);
+const agentSurfaceBorrowExplainBody = JSON.parse(agentSurfaceBorrowExplain.stdout);
+assert.equal(agentSurfaceBorrowExplainBody.code, "BOR001");
+assert.equal(agentSurfaceBorrowExplainBody.repair.id, "end-conflicting-borrow");
+assert.match(agentSurfaceBorrowExplainBody.summary, /lexical scope/);
 
 const agentSurfaceUnresolvedImport = await execFileAsync(zero, ["check", "--json", "conformance/agent-surface/fixtures/unresolved-package-import"]).catch((error) => error);
 assert.notEqual(agentSurfaceUnresolvedImport.code, 0);
