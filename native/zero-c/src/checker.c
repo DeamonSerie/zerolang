@@ -69,6 +69,7 @@ struct Scope {
   bool *mutable;
   bool *moved;
   bool *is_param;
+  bool *is_static_param;
   int *decl_line;
   int *decl_column;
   ValueProvenance *value_provenance;
@@ -484,6 +485,7 @@ static void scope_add_ex(Scope *scope, const char *name, const char *type, bool 
     scope->mutable = z_checked_reallocarray(scope->mutable, next_cap, sizeof(bool));
     scope->moved = z_checked_reallocarray(scope->moved, next_cap, sizeof(bool));
     scope->is_param = z_checked_reallocarray(scope->is_param, next_cap, sizeof(bool));
+    scope->is_static_param = z_checked_reallocarray(scope->is_static_param, next_cap, sizeof(bool));
     scope->decl_line = z_checked_reallocarray(scope->decl_line, next_cap, sizeof(int));
     scope->decl_column = z_checked_reallocarray(scope->decl_column, next_cap, sizeof(int));
     scope->value_provenance = z_checked_reallocarray(scope->value_provenance, next_cap, sizeof(ValueProvenance));
@@ -494,6 +496,7 @@ static void scope_add_ex(Scope *scope, const char *name, const char *type, bool 
   scope->mutable[scope->len - 1] = mutable;
   scope->moved[scope->len - 1] = false;
   scope->is_param[scope->len - 1] = is_param;
+  scope->is_static_param[scope->len - 1] = false;
   scope->decl_line[scope->len - 1] = line;
   scope->decl_column[scope->len - 1] = column;
   scope->value_provenance[scope->len - 1] = (ValueProvenance){0};
@@ -509,6 +512,11 @@ static void scope_add_decl(Scope *scope, const char *name, const char *type, boo
 
 static void scope_add_param_decl(Scope *scope, const char *name, const char *type, int line, int column) {
   scope_add_ex(scope, name, type, false, true, line, column);
+}
+
+static void scope_add_static_param(Scope *scope, const char *name, const char *type) {
+  scope_add_ex(scope, name, type ? type : "usize", false, false, 0, 0);
+  if (scope && scope->len > 0) scope->is_static_param[scope->len - 1] = true;
 }
 
 static bool scope_has(Scope *scope, const char *name) {
@@ -892,6 +900,7 @@ static void scope_free(Scope *scope) {
   free(scope->mutable);
   free(scope->moved);
   free(scope->is_param);
+  free(scope->is_static_param);
   free(scope->decl_line);
   free(scope->decl_column);
   free(scope->value_provenance);
@@ -2027,7 +2036,8 @@ static void recursive_generic_scope_add_function_bindings(const Function *fun, G
   if (!fun || !scope) return;
   for (size_t i = 0; i < fun->type_params.len; i++) {
     const Param *type_param = &fun->type_params.items[i];
-    scope_add(scope, type_param->name, type_param->is_static ? (type_param->type ? type_param->type : "usize") : "Type", false);
+    if (type_param->is_static) scope_add_static_param(scope, type_param->name, type_param->type);
+    else scope_add(scope, type_param->name, "Type", false);
   }
   for (size_t i = 0; i < fun->params.len; i++) {
     const Param *param = &fun->params.items[i];
@@ -2725,7 +2735,8 @@ static void flow_scope_add_function_bindings(const Function *fun, Scope *scope) 
   if (!fun || !scope) return;
   for (size_t type_param_index = 0; type_param_index < fun->type_params.len; type_param_index++) {
     const Param *type_param = &fun->type_params.items[type_param_index];
-    scope_add(scope, type_param->name, type_param->is_static ? (type_param->type ? type_param->type : "usize") : "Type", false);
+    if (type_param->is_static) scope_add_static_param(scope, type_param->name, type_param->type);
+    else scope_add(scope, type_param->name, "Type", false);
   }
   for (size_t param_index = 0; param_index < fun->params.len; param_index++) {
     const Param *param = &fun->params.items[param_index];
@@ -7222,12 +7233,15 @@ static void collect_visible_type_names(Scope *scope, ParamVec *out) {
   if (!out) return;
   for (Scope *cursor = scope; cursor; cursor = cursor->parent) {
     for (size_t i = 0; i < cursor->len; i++) {
-      if (!cursor->names[i] || !cursor->types[i] || strcmp(cursor->types[i], "Type") != 0) continue;
+      bool static_param = cursor->is_static_param && cursor->is_static_param[i];
+      bool type_param = cursor->types[i] && strcmp(cursor->types[i], "Type") == 0;
+      if (!cursor->names[i] || (!type_param && !static_param)) continue;
       if (param_vec_contains_name(out, cursor->names[i])) continue;
       out->items = checker_grow_items(out->items, out->len, &out->cap, 8, sizeof(Param));
       out->items[out->len++] = (Param){
         .name = cursor->names[i],
-        .type = "Type",
+        .type = static_param ? cursor->types[i] : "Type",
+        .is_static = static_param,
       };
     }
   }
@@ -7683,7 +7697,7 @@ static bool check_shape_method_body(CheckContext *ctx, const Program *program, c
     bindings[i + 1].name = shape->type_params.items[i].name;
     bindings[i + 1].type = z_strdup(shape->type_params.items[i].name);
     if (shape->type_params.items[i].is_static) {
-      scope_add(&scope, shape->type_params.items[i].name, shape->type_params.items[i].type ? shape->type_params.items[i].type : "usize", false);
+      scope_add_static_param(&scope, shape->type_params.items[i].name, shape->type_params.items[i].type);
     } else {
       scope_add(&scope, shape->type_params.items[i].name, "Type", false);
     }
@@ -8251,19 +8265,20 @@ bool z_check_program(const Program *program, ZDiag *diag) {
     if (!validate_export_c_function(fun, diag)) return false;
   }
   if (!main_fun && !has_test) return set_diag_detail(diag, 2001, "missing main function", 1, 1, "function named main", "no main function", "add pub fun main(...) -> Void");
-	  for (size_t i = 0; i < program->functions.len; i++) {
-	    const Function *fun = &program->functions.items[i];
-	    Scope scope = {0};
-	    for (size_t const_index = 0; const_index < program->consts.len; const_index++) {
-	      const ConstDecl *item = &program->consts.items[const_index];
-	      scope_add(&scope, item->name, item->type ? item->type : expr_type(ctx, program, item->expr, &scope), false);
-	    }
-	    for (size_t type_param_index = 0; type_param_index < fun->type_params.len; type_param_index++) {
-	      const Param *type_param = &fun->type_params.items[type_param_index];
-	      scope_add(&scope, type_param->name, type_param->is_static ? (type_param->type ? type_param->type : "usize") : "Type", false);
-	    }
-	    for (size_t param_index = 0; param_index < fun->params.len; param_index++) {
-	      Param *param = &fun->params.items[param_index];
+  for (size_t i = 0; i < program->functions.len; i++) {
+    const Function *fun = &program->functions.items[i];
+    Scope scope = {0};
+    for (size_t const_index = 0; const_index < program->consts.len; const_index++) {
+      const ConstDecl *item = &program->consts.items[const_index];
+      scope_add(&scope, item->name, item->type ? item->type : expr_type(ctx, program, item->expr, &scope), false);
+    }
+    for (size_t type_param_index = 0; type_param_index < fun->type_params.len; type_param_index++) {
+      const Param *type_param = &fun->type_params.items[type_param_index];
+      if (type_param->is_static) scope_add_static_param(&scope, type_param->name, type_param->type);
+      else scope_add(&scope, type_param->name, "Type", false);
+    }
+    for (size_t param_index = 0; param_index < fun->params.len; param_index++) {
+      Param *param = &fun->params.items[param_index];
       if (!validate_type_form(param->type, diag, param->line, param->column)) {
         scope_free(&scope);
         return false;
