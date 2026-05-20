@@ -1871,6 +1871,7 @@ static bool type_param_name_known(const ParamVec *primary, const ParamVec *secon
 static bool static_type_param_name_known_for_type(const Program *program, const ParamVec *primary, const ParamVec *secondary, const char *name, const char *expected_type);
 static bool static_value_name_shadowed_by_type_param(const ParamVec *primary, const ParamVec *secondary, const char *name);
 static const ParamVec *generic_type_params_for_name(const Program *program, const char *name);
+static bool type_core_generic_arg_kind_for_program(const void *context, const char *type_name, size_t arg_index, ZTypeArgKind *out_kind);
 static const Shape *find_shape_for_type(const Program *program, const char *type);
 static const Choice *find_choice(const Program *program, const char *name);
 static const Param *find_case(const ParamVec *cases, const char *name);
@@ -2881,7 +2882,7 @@ static void function_type_pattern_binder_scope(const Program *program, const Fun
   }
   size_t len = fun->type_params.len;
   len = append_type_core_static_const_binders(program, NULL, decls, len, (ZTypeBinderId)(fun->type_params.len + 1), omit_ambiguous_type_args);
-  *scope = (ZTypeBinderScope){.items = decls, .len = len};
+  *scope = (ZTypeBinderScope){.items = decls, .len = len, .arg_kind = type_core_generic_arg_kind_for_program, .arg_kind_context = program};
 }
 
 static void function_type_actual_binder_scope(const Program *program, const Function *fun, Scope *actual_scope, ZTypeBinderDecl *decls, ZTypeBinderScope *scope, bool omit_ambiguous_type_args) {
@@ -2891,7 +2892,7 @@ static void function_type_actual_binder_scope(const Program *program, const Func
   size_t const_count = type_core_static_const_binder_count(program);
   size_t len = append_type_core_scope_static_param_binders(actual_scope, decls, 0, (ZTypeBinderId)(const_id + const_count));
   len = append_type_core_static_const_binders(program, actual_scope, decls, len, const_id, omit_ambiguous_type_args);
-  *scope = (ZTypeBinderScope){.items = decls, .len = len};
+  *scope = (ZTypeBinderScope){.items = decls, .len = len, .arg_kind = type_core_generic_arg_kind_for_program, .arg_kind_context = program};
 }
 
 static char *unify_binding_text(const ZTypeArena *arena, const ZUnifyBinding *binding) {
@@ -3946,7 +3947,7 @@ static void type_core_inference_pattern_scope(const Program *program, GenericBin
     };
   }
   len = append_type_core_static_const_binders(program, NULL, decls, len, (ZTypeBinderId)(binder_len + 1), omit_ambiguous_type_args);
-  *scope = (ZTypeBinderScope){.items = decls, .len = len};
+  *scope = (ZTypeBinderScope){.items = decls, .len = len, .arg_kind = type_core_generic_arg_kind_for_program, .arg_kind_context = program};
 }
 
 static void type_core_inference_actual_scope(const Program *program, Scope *actual_scope, size_t binder_len, ZTypeBinderDecl *decls, ZTypeBinderScope *scope, bool omit_ambiguous_type_args) {
@@ -3956,7 +3957,7 @@ static void type_core_inference_actual_scope(const Program *program, Scope *actu
   size_t const_count = type_core_static_const_binder_count(program);
   size_t len = append_type_core_scope_static_param_binders(actual_scope, decls, 0, (ZTypeBinderId)(const_id + const_count));
   len = append_type_core_static_const_binders(program, actual_scope, decls, len, const_id, omit_ambiguous_type_args);
-  *scope = (ZTypeBinderScope){.items = decls, .len = len};
+  *scope = (ZTypeBinderScope){.items = decls, .len = len, .arg_kind = type_core_generic_arg_kind_for_program, .arg_kind_context = program};
 }
 
 static bool seed_type_core_existing_generic_bindings(ZTypeArena *arena, const ZTypeBinderScope *actual_scope, GenericBinding *bindings, size_t binding_len, const TypeCoreInferenceBinder *binders, size_t binder_len, ZUnifyTrace *trace) {
@@ -5134,6 +5135,14 @@ static const ParamVec *generic_type_params_for_name(const Program *program, cons
   const InterfaceDecl *interface = find_interface(program, name);
   if (interface) return &interface->type_params;
   return NULL;
+}
+
+static bool type_core_generic_arg_kind_for_program(const void *context, const char *type_name, size_t arg_index, ZTypeArgKind *out_kind) {
+  const Program *program = (const Program *)context;
+  const ParamVec *type_params = generic_type_params_for_name(program, type_name);
+  if (!type_params || arg_index >= type_params->len || !out_kind) return false;
+  *out_kind = type_params->items[arg_index].is_static ? Z_TYPE_ARG_STATIC : Z_TYPE_ARG_TYPE;
+  return true;
 }
 
 static bool types_compatible_in_scope(const Program *program, Scope *scope, const char *expected, const char *actual) {
