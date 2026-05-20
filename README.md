@@ -1,4 +1,4 @@
-# Zero
+# zerolang
 
 Zero is an experiment in building an agent-first programming language.
 
