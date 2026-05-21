@@ -475,6 +475,147 @@ assert.equal(rowPackageTest.discoveredTests, 1);
 assert(rowPackageTest.fixtures.sourceFiles.includes(rowPackageHelper));
 assert.equal(rowPackageTest.results[0].status, "passed");
 
+const rowArtifactDir = join(outDir, "row-artifact");
+const currentArtifactDir = join(outDir, "current-artifact");
+rmSync(rowArtifactDir, { recursive: true, force: true });
+rmSync(currentArtifactDir, { recursive: true, force: true });
+mkdirSync(rowArtifactDir, { recursive: true });
+mkdirSync(currentArtifactDir, { recursive: true });
+const rowArtifactMain = join(rowArtifactDir, "main.row");
+const rowArtifactHelper = join(rowArtifactDir, "helper.row");
+const currentArtifactMain = join(currentArtifactDir, "main.0");
+const currentArtifactHelper = join(currentArtifactDir, "helper.0");
+writeFileSync(
+  rowArtifactHelper,
+  "pub fn plusOne i32 value i32\n" +
+    "  ret + value 1\n",
+);
+writeFileSync(
+  rowArtifactMain,
+  "use helper\n" +
+    "export c fn main i32\n" +
+    "  ret plusOne 41\n",
+);
+writeFileSync(
+  currentArtifactHelper,
+  "pub fun plusOne(value: i32) -> i32 {\n" +
+    "    return value + 1\n" +
+    "}\n",
+);
+writeFileSync(
+  currentArtifactMain,
+  "use helper\n" +
+    "\n" +
+    "export c fun main() -> i32 {\n" +
+    "    return plusOne(41)\n" +
+    "}\n",
+);
+const rowArtifactGraph = json(["graph", "--json", rowArtifactMain]).body;
+const currentArtifactGraph = json(["graph", "--json", currentArtifactMain]).body;
+const functionSummary = (fun) => ({
+  name: fun.name,
+  public: fun.public,
+  params: fun.params,
+  returnType: fun.returnType,
+  raises: fun.raises,
+});
+const publicSymbolSummary = (symbol) => ({
+  name: symbol.name,
+  kind: symbol.kind,
+  public: symbol.public,
+});
+assert.deepEqual(rowArtifactGraph.functions.map(functionSummary), currentArtifactGraph.functions.map(functionSummary));
+assert.deepEqual(
+  rowArtifactGraph.symbols.filter((symbol) => symbol.public).map(publicSymbolSummary),
+  currentArtifactGraph.symbols.filter((symbol) => symbol.public).map(publicSymbolSummary),
+);
+assert.deepEqual(rowArtifactGraph.imports, ["helper"]);
+assert.deepEqual(currentArtifactGraph.imports, ["helper"]);
+assert(rowArtifactGraph.sourceFiles.includes(rowArtifactMain));
+assert(rowArtifactGraph.sourceFiles.includes(rowArtifactHelper));
+assert.equal(rowArtifactGraph.sourceFiles.length, currentArtifactGraph.sourceFiles.length);
+
+const rowArtifactBuildOut = join(outDir, "row-artifact-build");
+rmSync(rowArtifactBuildOut, { force: true });
+const rowArtifactBuild = json(["build", "--json", "--target", "linux-musl-x64", rowArtifactMain, "--out", rowArtifactBuildOut]).body;
+assert.equal(rowArtifactBuild.sourceFile, rowArtifactMain);
+assert.equal(rowArtifactBuild.generatedCBytes, 0);
+assert.equal(rowArtifactBuild.cBridgeFallback ?? false, false);
+assert.equal(rowArtifactBuild.objectBackend.objectEmission.path, "direct-elf64-exe");
+assert.equal(rowArtifactBuild.objectBackend.linking.externalToolchain, "none");
+assert.equal(rowArtifactBuild.objectBackend.directFacts.functionCount, 2);
+assert(rowArtifactBuild.incrementalInvalidation.changedInputs.sourceFiles.includes(rowArtifactHelper));
+assert(rowArtifactBuild.incrementalInvalidation.changedInputs.sourceFiles.includes(rowArtifactMain));
+assertReleaseTargetContract(rowArtifactBuild, {
+  target: "linux-musl-x64",
+  emit: "exe",
+  objectFormat: "elf",
+  artifactKind: "native-executable",
+  linkerFlavor: "elf64",
+  targetLibcMode: "bundled-libc",
+});
+repeatBuildHash(
+  ["build", "--json", "--target", "linux-musl-x64", rowArtifactMain, "--out", rowArtifactBuildOut],
+  rowArtifactBuildOut,
+  `${rowArtifactBuildOut}.repeat`,
+);
+
+const rowArtifactObjOut = join(outDir, "row-artifact.o");
+rmSync(rowArtifactObjOut, { force: true });
+const rowArtifactObj = json(["build", "--json", "--emit", "obj", "--target", "linux-musl-x64", rowArtifactMain, "--out", rowArtifactObjOut]).body;
+const rowArtifactObjBytes = readFileSync(rowArtifactObjOut);
+assert.equal(rowArtifactObj.sourceFile, rowArtifactMain);
+assert.equal(rowArtifactObj.emit, "obj");
+assert.equal(rowArtifactObj.generatedCBytes, 0);
+assert.equal(rowArtifactObj.objectBackend.objectEmission.path, "direct-elf64-object");
+assert.equal(rowArtifactObj.objectBackend.linking.externalToolchain, "none");
+assert.equal(rowArtifactObjBytes[0], 0x7f);
+assert.equal(rowArtifactObjBytes[1], 0x45);
+assert.equal(rowArtifactObjBytes[2], 0x4c);
+assert.equal(rowArtifactObjBytes[3], 0x46);
+
+const rowRunArtifactOut = join(outDir, "row-run-artifact");
+rmSync(rowRunArtifactOut, { force: true });
+rmSync(`${rowRunArtifactOut}.exe`, { force: true });
+rmSync(`${rowRunArtifactOut}.c`, { force: true });
+const rowRunResult = zero(["run", "--out", rowRunArtifactOut, rowArtifactMain], { allowFailure: true });
+assert.equal(rowRunResult.code, 42);
+assert.equal(rowRunResult.stdout, "");
+assert(existsSync(version.host.startsWith("win32") ? `${rowRunArtifactOut}.exe` : rowRunArtifactOut));
+assert.equal(existsSync(`${rowRunArtifactOut}.c`), false);
+
+const rowShipOut = join(outDir, "row-ship-artifact");
+const firstRowShip = json(["ship", "--json", "--target", "linux-musl-x64", rowArtifactMain, "--out", rowShipOut]).body;
+assert.equal(firstRowShip.sourceFile, rowArtifactMain);
+assertShipReport(firstRowShip, rowShipOut);
+const secondRowShip = json(["ship", "--json", "--target", "linux-musl-x64", rowArtifactMain, "--out", rowShipOut]).body;
+assertShipReport(secondRowShip, rowShipOut);
+assert.equal(secondRowShip.checksum.value, firstRowShip.checksum.value);
+assert.equal(secondRowShip.artifactBytes, firstRowShip.artifactBytes);
+
+const rowArtifactMem = json(["mem", "--json", rowArtifactMain]).body;
+assert.equal(rowArtifactMem.sourceFile, rowArtifactMain);
+assert.equal(rowArtifactMem.generatedCBytes, 0);
+assert.equal(rowArtifactMem.cBridgeFallback, false);
+assert.equal(rowArtifactMem.directFacts.functionCount, 2);
+assert.equal(rowArtifactMem.memory.hiddenHeapAllocation, false);
+assert(rowArtifactMem.incrementalInvalidation.changedInputs.sourceFiles.includes(rowArtifactHelper));
+const rowArtifactTime = json(["time", "--json", rowArtifactMain]).body;
+assert.equal(rowArtifactTime.sourceFile, rowArtifactMain);
+assert.equal(rowArtifactTime.generatedCBytes, 0);
+assert.equal(rowArtifactTime.cBridgeFallback, false);
+assert(rowArtifactTime.compilerPhases.some((phase) => phase.name === "parse"));
+assert(rowArtifactTime.compilerPhases.some((phase) => phase.name === "link"));
+assert(rowArtifactTime.incrementalInvalidation.changedInputs.sourceFiles.includes(rowArtifactHelper));
+const rowArtifactAbiDump = json(["abi", "dump", "--json", rowArtifactMain]).body;
+assert.equal(rowArtifactAbiDump.sourceFile, rowArtifactMain);
+assert(rowArtifactAbiDump.cExports.some((item) => item.name === "main" && item.cReturnType === "int32_t"));
+assert.match(rowArtifactAbiDump.generatedHeader.text, /int32_t main\(void\);/);
+const rowArtifactAbiCheck = json(["abi", "check", "--json", rowArtifactMain]).body;
+assert.equal(rowArtifactAbiCheck.ok, true);
+assert.equal(rowArtifactAbiCheck.sourceFile, rowArtifactMain);
+assert.deepEqual(rowArtifactAbiCheck.diagnostics, []);
+
 const rowMissingMainPackage = join(outDir, "row-missing-main-package");
 mkdirSync(join(rowMissingMainPackage, "src"), { recursive: true });
 writeFileSync(
