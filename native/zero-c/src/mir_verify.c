@@ -61,6 +61,12 @@ static unsigned mir_type_byte_size(IrTypeKind type) {
   }
 }
 
+static unsigned mir_type_local_slot_min_byte_size(IrTypeKind type) {
+  unsigned byte_size = mir_type_byte_size(type);
+  if (byte_size > 0 && byte_size < 4) return 4;
+  return byte_size;
+}
+
 static unsigned mir_type_storage_min_byte_size(const IrLocal *local) {
   if (!local) return 0;
   if (local->is_array) {
@@ -79,7 +85,7 @@ static unsigned mir_type_storage_min_byte_size(const IrLocal *local) {
     case IR_TYPE_MAYBE_BYTE_VIEW:
       return 24;
     default:
-      return mir_type_byte_size(local->type);
+      return mir_type_local_slot_min_byte_size(local->type);
   }
 }
 
@@ -108,6 +114,33 @@ static bool mir_value_can_initialize_local(const IrLocal *local, const IrValue *
   if (!local || !value) return false;
   if (value->type == local->type) return true;
   return local->type == IR_TYPE_MAYBE_SCALAR && value->type == IR_TYPE_I64;
+}
+
+static bool mir_verify_local_initializer_kind(IrProgram *ir, const IrLocal *local, const IrValue *value, int line, int column) {
+  if (!ir || !ir->mir_valid || !local || !value) return false;
+  switch (local->type) {
+    case IR_TYPE_ALLOC:
+      if (value->kind == IR_VALUE_FIXED_BUF_ALLOC) return true;
+      break;
+    case IR_TYPE_VEC:
+      if (value->kind == IR_VALUE_VEC_INIT) return true;
+      break;
+    case IR_TYPE_MAYBE_BYTE_VIEW:
+      if (value->kind == IR_VALUE_ALLOC_BYTES ||
+          value->kind == IR_VALUE_ARGS_GET ||
+          value->kind == IR_VALUE_ENV_GET ||
+          value->kind == IR_VALUE_FS_READ_ALL ||
+          value->kind == IR_VALUE_FS_TEMP_NAME) {
+        return true;
+      }
+      break;
+    default:
+      return true;
+  }
+  char actual[192];
+  snprintf(actual, sizeof(actual), "local %s has %s initializer kind %d", local->name ? local->name : "<unnamed>", mir_type_kind_name(local->type), (int)value->kind);
+  mir_verify_mark_unsupported(ir, "MIR verifier found invalid local initializer", line, column, actual);
+  return false;
 }
 
 typedef struct {
@@ -688,6 +721,7 @@ static bool mir_verify_direct_instr_contract(IrProgram *ir, const IrFunction *fu
         mir_verify_mark_unsupported(ir, "MIR verifier found local write type mismatch", instr->line, instr->column, actual);
         return false;
       }
+      if (!mir_verify_local_initializer_kind(ir, local, instr->value, instr->line, instr->column)) return false;
       break;
     }
     case IR_INSTR_INDEX_STORE: {

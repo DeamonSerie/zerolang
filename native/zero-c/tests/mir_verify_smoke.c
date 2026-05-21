@@ -320,6 +320,14 @@ static void overlapping_frame_fails(void) {
   expect_fail("overlapping frame", &ir, "overlapping local storage");
 }
 
+static void small_scalar_slot_fails(void) {
+  IrLocal locals[] = {scalar_local("flag", IR_TYPE_BOOL, 0, false)};
+  locals[0].byte_size = 1;
+  IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, locals, 1, 0, NULL, 0, 16, false);
+  IrProgram ir = program(&fun, 1);
+  expect_fail("small scalar slot", &ir, "invalid local storage layout");
+}
+
 static void raise_in_non_fallible_function_fails(void) {
   IrInstr raise = {.kind = IR_INSTR_RAISE, .error_code = IR_ERROR_UNKNOWN, .line = 1, .column = 1};
   IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, NULL, 0, 0, &raise, 1, 0, false);
@@ -367,6 +375,32 @@ static void buffer_helper_contract_fails(void) {
   IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, locals, 2, 0, &set, 1, 48, false);
   IrProgram ir = program(&fun, 1);
   expect_fail("buffer helper contract", &ir, "missing buffer helper contract");
+}
+
+static void alloc_local_invalid_initializer_fails(void) {
+  IrLocal locals[] = {
+    scalar_local("dst", IR_TYPE_ALLOC, 0, false),
+    scalar_local("src", IR_TYPE_ALLOC, 1, false)
+  };
+  IrValue src = value(IR_VALUE_LOCAL, IR_TYPE_ALLOC);
+  src.local_index = 1;
+  IrInstr set = {.kind = IR_INSTR_LOCAL_SET, .local_index = 0, .value = &src, .line = 1, .column = 1};
+  IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, locals, 2, 0, &set, 1, 48, false);
+  IrProgram ir = program(&fun, 1);
+  expect_fail("Alloc local invalid initializer", &ir, "invalid local initializer");
+}
+
+static void vec_local_invalid_initializer_fails(void) {
+  IrLocal locals[] = {
+    scalar_local("dst", IR_TYPE_VEC, 0, false),
+    scalar_local("src", IR_TYPE_VEC, 1, false)
+  };
+  IrValue src = value(IR_VALUE_LOCAL, IR_TYPE_VEC);
+  src.local_index = 1;
+  IrInstr set = {.kind = IR_INSTR_LOCAL_SET, .local_index = 0, .value = &src, .line = 1, .column = 1};
+  IrFunction fun = function("main", IR_TYPE_VOID, IR_TYPE_VOID, locals, 2, 0, &set, 1, 48, false);
+  IrProgram ir = program(&fun, 1);
+  expect_fail("Vec local invalid initializer", &ir, "invalid local initializer");
 }
 
 static void fixed_buf_alloc_readonly_storage_fails(void) {
@@ -791,10 +825,13 @@ int main(void) {
   field_write_partial_overrun_fails();
   field_load_partial_overrun_fails();
   overlapping_frame_fails();
+  small_scalar_slot_fails();
   raise_in_non_fallible_function_fails();
   raise_in_hosted_world_main_passes();
   allocator_helper_contract_fails();
   buffer_helper_contract_fails();
+  alloc_local_invalid_initializer_fails();
+  vec_local_invalid_initializer_fails();
   fixed_buf_alloc_readonly_storage_fails();
   vec_init_immutable_storage_fails();
   fixed_buf_alloc_unknown_maybe_storage_fails();
