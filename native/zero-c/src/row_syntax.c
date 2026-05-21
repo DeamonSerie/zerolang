@@ -116,6 +116,7 @@ static ZRowToken row_token(ZRowTokenKind kind, char *text, int line, int column,
 
 static void row_diag(ZDiag *diag, int line, int column, int length, const char *message, const char *expected, const char *help) {
   if (!diag) return;
+  if (diag->code != 0) return;
   diag->code = 100;
   diag->line = line;
   diag->column = column;
@@ -566,8 +567,26 @@ static bool row_expect_text(const ZRowTokenVec *tokens, size_t *pos, size_t end,
   return false;
 }
 
+static bool row_is_reserved_word(const char *text) {
+  const char *keywords[] = {
+    "as", "break", "check", "choice", "const", "continue", "defer", "else", "enum", "export", "extern", "false",
+    "fn", "for", "fun", "if", "import", "in", "let", "match", "meta", "mut", "null", "packed", "pub",
+    "raise", "raises", "rescue", "ret", "return", "set", "shape", "static", "test", "true", "type",
+    "use", "var", "while", NULL
+  };
+  for (int i = 0; keywords[i]; i++) {
+    if (strcmp(text, keywords[i]) == 0) return true;
+  }
+  return false;
+}
+
 static const ZRowToken *row_expect_word(const ZRowTokenVec *tokens, size_t *pos, size_t end, ZDiag *diag, const char *message) {
-  if (*pos < end && tokens->items[*pos].kind == Z_ROW_TOKEN_WORD) return &tokens->items[(*pos)++];
+  if (*pos < end && tokens->items[*pos].kind == Z_ROW_TOKEN_WORD) {
+    if (!row_is_reserved_word(tokens->items[*pos].text)) return &tokens->items[(*pos)++];
+    const ZRowToken *token = &tokens->items[*pos];
+    row_diag(diag, token->line, token->column, token->length > 0 ? (int)token->length : 1, "reserved word cannot be used as an identifier", "identifier", "choose a non-keyword name");
+    return NULL;
+  }
   const ZRowToken *token = *pos < end ? &tokens->items[*pos] : (end > 0 ? &tokens->items[end - 1] : NULL);
   row_diag(diag, token ? token->line : 1, token ? token->column : 1, 1, message, "identifier", NULL);
   return NULL;
@@ -581,7 +600,8 @@ static bool row_is_type_start(const ZRowTokenVec *tokens, size_t pos, size_t end
   const char *text = token->text;
   if (isupper((unsigned char)text[0])) return true;
   const char *known[] = {
-    "Bool", "String", "Void", "i32", "i64", "u8", "u16", "u32", "u64", "usize",
+    "Bool", "String", "Void", "char", "i8", "i16", "i32", "i64", "isize",
+    "u8", "u16", "u32", "u64", "usize", "f32", "f64",
     "owned", "ref", "mutref", "const", "span", "Span", "MutSpan", "Maybe", NULL
   };
   for (int i = 0; known[i]; i++) {
@@ -760,7 +780,7 @@ static Expr *row_parse_primary(RowExprParser *parser) {
     expr->bool_value = false;
   } else if (token->kind == Z_ROW_TOKEN_WORD && strcmp(token->text, "null") == 0) {
     expr = row_new_expr(EXPR_NULL, token);
-  } else if (token->kind == Z_ROW_TOKEN_WORD) {
+  } else if (token->kind == Z_ROW_TOKEN_WORD && !row_is_reserved_word(token->text)) {
     expr = row_new_expr(EXPR_IDENT, token);
     expr->text = z_strdup(token->text);
   } else if (strcmp(token->text, "[") == 0) {
@@ -1169,6 +1189,11 @@ static MatchArmVec row_parse_match_arms(const ZRowTokenVec *tokens, const ZRowTr
     const ZRowToken *case_name = &tokens->items[pos++];
     if (case_name->kind != Z_ROW_TOKEN_WORD && case_name->kind != Z_ROW_TOKEN_NUMBER) {
       row_diag(diag, case_name->line, case_name->column, 1, "expected match case name", "case name", NULL);
+      continue;
+    }
+    if (case_name->kind == Z_ROW_TOKEN_WORD && row_is_reserved_word(case_name->text) &&
+        strcmp(case_name->text, "true") != 0 && strcmp(case_name->text, "false") != 0) {
+      row_diag(diag, case_name->line, case_name->column, case_name->length > 0 ? (int)case_name->length : 1, "reserved word cannot be used as a match case name", "case name", "choose a non-keyword case name");
       continue;
     }
 

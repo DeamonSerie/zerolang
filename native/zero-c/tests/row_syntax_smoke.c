@@ -507,6 +507,33 @@ static void parses_zero_arg_and_uppercase_member_calls(void) {
   z_free_row_tokens(&tokens);
 }
 
+static void parses_lowercase_primitive_annotations(void) {
+  const char *source =
+    "pub fn main Void\n"
+    "  let letter char 'A'\n"
+    "  let small i8 1\n"
+    "  let medium i16 2\n"
+    "  let wide isize 3\n"
+    "  let single f32 1.25\n"
+    "  let double f64 2.5\n";
+  ZRowTokenVec tokens = {0};
+  ZRowTree tree = {0};
+  Program program = parse_row_program(source, &tokens, &tree);
+
+  Function *main_fun = &program.functions.items[0];
+  expect(main_fun->body.len == 6, "expected all lowercase primitive annotations to parse");
+  expect(strcmp(main_fun->body.items[0]->type, "char") == 0, "expected char annotation");
+  expect(strcmp(main_fun->body.items[1]->type, "i8") == 0, "expected i8 annotation");
+  expect(strcmp(main_fun->body.items[2]->type, "i16") == 0, "expected i16 annotation");
+  expect(strcmp(main_fun->body.items[3]->type, "isize") == 0, "expected isize annotation");
+  expect(strcmp(main_fun->body.items[4]->type, "f32") == 0, "expected f32 annotation");
+  expect(strcmp(main_fun->body.items[5]->type, "f64") == 0, "expected f64 annotation");
+
+  z_free_program(&program);
+  z_free_row_tree(&tree);
+  z_free_row_tokens(&tokens);
+}
+
 static void rejects_unbracketed_named_errors(void) {
   const char *source = "fn validate i32 ok Bool ! InvalidInput\n";
   ZDiag diag = {0};
@@ -543,6 +570,21 @@ static void rejects_else_after_explicit_else_block(void) {
   z_free_program(&program);
   z_free_row_tree(&tree);
   z_free_row_tokens(&tokens);
+}
+
+static void rejects_reserved_word_identifiers(void) {
+  expect_row_parse_failure("fn if Void\n", "reserved word");
+  expect_row_parse_failure(
+    "pub fn main Void\n"
+    "  let match i32 1\n",
+    "reserved word"
+  );
+  expect_row_parse_failure(
+    "type Point\n"
+    "  if i32\n"
+    "pub fn main Void\n",
+    "reserved word"
+  );
 }
 
 static void rejects_unconsumed_row_expression_tokens(void) {
@@ -660,8 +702,10 @@ int main(void) {
   parses_match_statement();
   parses_core_data_declarations();
   parses_zero_arg_and_uppercase_member_calls();
+  parses_lowercase_primitive_annotations();
   rejects_unbracketed_named_errors();
   rejects_else_after_explicit_else_block();
+  rejects_reserved_word_identifiers();
   rejects_unconsumed_row_expression_tokens();
   rejects_empty_use_import();
   rejects_unexpected_child_rows();

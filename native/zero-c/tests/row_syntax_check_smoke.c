@@ -144,6 +144,19 @@ static void public_data_declarations_check(void) {
   );
 }
 
+static void lowercase_primitive_annotations_check(void) {
+  check_row_source(
+    "lowercase primitive annotations",
+    "pub fn main Void\n"
+    "  let letter char 'A'\n"
+    "  let small i8 1\n"
+    "  let medium i16 2\n"
+    "  let wide isize 3\n"
+    "  let single f32 1.25\n"
+    "  let double f64 2.5\n"
+  );
+}
+
 static void named_error_rejects_without_brackets(void) {
   const char *source = "fn validate i32 ok Bool ! InvalidInput\n";
   ZDiag diag = {0};
@@ -166,6 +179,7 @@ int main(void) {
   slices_and_casts_check();
   match_check();
   public_data_declarations_check();
+  lowercase_primitive_annotations_check();
   named_error_rejects_without_brackets();
   printf("row syntax check smoke ok\n");
   return 0;
