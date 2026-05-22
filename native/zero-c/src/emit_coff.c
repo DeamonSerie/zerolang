@@ -234,9 +234,7 @@ static bool coff_emit_byte_view_ptr(ZBuf *text, const IrFunction *fun, const IrV
     if (!coff_const_u32_value(view->index, &start)) return coff_diag_at(diag, "direct COFF byte slice currently requires a constant start", view->line, view->column, "unsupported byte slice");
     if (!coff_emit_byte_view_ptr(text, fun, view->left, ctx, diag)) return false;
     if (start > 0) {
-      z_x64_append_u8(text, 0x48);
-      z_x64_append_u8(text, 0x05);
-      z_x64_append_u32(text, start);
+      z_x64_emit_add_rax_u32(text, start, true);
     }
     return true;
   }
@@ -317,9 +315,7 @@ static bool coff_emit_value(ZBuf *text, const IrFunction *fun, const IrValue *va
       z_x64_emit_add_rdx_rcx(text, true);
       z_x64_emit_store_ptr_rdx_al(text);
       z_x64_emit_mov_eax_from_ecx(text);
-      z_x64_append_u8(text, 0x83);
-      z_x64_append_u8(text, 0xc0);
-      z_x64_append_u8(text, 0x01);
+      z_x64_emit_add_reg_i8(text, 0, 1, false);
       coff_emit_store_local_slot_from_reg(text, fun, value->local_index, 0, 8, false);
       z_x64_emit_mov_eax_u32(text, 1);
       z_x64_patch_rel32(text, end_patch, text->len);
@@ -470,9 +466,7 @@ static bool coff_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *in
       z_x64_emit_mov_eax_u32(text, 1);
       coff_emit_store_local_slot_from_reg(text, fun, instr->local_index, 0, 0, false);
       coff_emit_load_local_slot_reg(text, fun, instr->value->local_index, 0, 2, true);
-      z_x64_append_u8(text, 0x48);
-      z_x64_append_u8(text, 0x01);
-      z_x64_append_u8(text, 0xd2);
+      z_x64_emit_add_reg_reg(text, 2, 2, true);
       coff_emit_store_local_slot_from_reg(text, fun, instr->local_index, 2, 8, true);
       z_x64_emit_mov_reg_from_reg(text, 0, 2, false);
       coff_emit_store_local_slot_from_reg(text, fun, instr->local_index, 0, 16, false);
