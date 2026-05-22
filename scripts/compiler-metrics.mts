@@ -8,6 +8,11 @@ const sourceFileDirs = [
   "native/zero-c/src",
 ];
 
+type CScanState = {
+  blockComment: boolean;
+  quote: "\"" | "'" | null;
+};
+
 const fileBudgets = {
   "native/zero-c/include/zero.h": { maxLines: 900, maxStrcmpCalls: 0 },
   "native/zero-c/include/zero_runtime.h": { maxLines: 100, maxStrcmpCalls: 0 },
@@ -38,8 +43,10 @@ const knownLargeFunctionLimits = new Map([
   ["native/zero-c/src/ir.c|static bool ir_lower_expr(const Program *program, IrProgram *ir, const IrFunction *fun, const Expr *expr, IrValue **out) {", 1484],
   ["native/zero-c/src/checker.c|static bool check_expr_expected(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ZDiag *diag, const char *expected) {", 1170],
   ["native/zero-c/src/emit_elf64.c|static bool elf_emit_value(ZBuf *code, const IrFunction *fun, const IrValue *value, ElfEmitContext *ctx, ZDiag *diag) {", 1085],
+  ["native/zero-c/src/main.c|int main(int argc, char **argv) {", 924],
   ["native/zero-c/src/emit_macho64.c|bool z_emit_macho64_object_from_ir(const IrProgram *program, ZBuf *out, ZDiag *diag) {", 481],
   ["native/zero-c/src/emit_elf64.c|bool z_emit_elf64_object_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {", 405],
+  ["native/zero-c/src/main.c|static void append_graph_json(ZBuf *buf, const SourceInput *input, const Program *program, const ZTargetInfo *target) {", 374],
   ["native/zero-c/src/emit_macho64.c|bool z_emit_macho64_exe_from_ir(const IrProgram *program, ZBuf *out, ZDiag *diag) {", 318],
   ["native/zero-c/src/emit_elf64.c|static bool elf_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *instr, ElfEmitContext *ctx, ZDiag *diag) {", 300],
   ["native/zero-c/src/emit_macho64.c|static bool macho_emit_value_to_reg_at(ZBuf *text, const IrFunction *fun, const IrValue *value, unsigned reg, unsigned frame_size, unsigned scratch_slot, MachOEmitContext *ctx, ZDiag *diag) {", 295],
@@ -56,6 +63,7 @@ const knownLargeFunctionLimits = new Map([
   ["native/zero-c/src/emit_coff.c|static bool coff_emit_instr(ZBuf *text, const IrFunction *fun, const IrInstr *instr, CoffEmitContext *ctx, ZDiag *diag) {", 165],
   ["native/zero-c/src/emit_elf64.c|bool z_emit_elf64_exe_from_ir(const IrProgram *ir, ZBuf *out, ZDiag *diag) {", 158],
   ["native/zero-c/src/checker.c|static bool expr_reference_provenance(CheckContext *ctx, const Program *program, const Expr *expr, Scope *scope, ValueProvenance *origins) {", 152],
+  ["native/zero-c/src/main.c|static int run_tests_direct(const Command *command, const SourceInput *input, const Program *program, const ZTargetInfo *target) {", 151],
   ["native/zero-c/src/checker.c|static const char *std_call_return_type(const Expr *callee) {", 146],
   ["native/zero-c/src/emit_elf64.c|static bool elf_emit_read_all_or_raise_to_local(ZBuf *text, const IrFunction *fun, const IrInstr *instr, ElfEmitContext *ctx, ZDiag *diag) {", 145],
   ["native/zero-c/src/ast.c|void z_free_program(Program *program) {", 143],
@@ -66,6 +74,7 @@ const knownLargeFunctionLimits = new Map([
   ["native/zero-c/src/row_syntax.c|static Stmt *row_parse_statement(const ZRowTokenVec *tokens, const ZRowTree *tree, size_t row_index, ZDiag *diag) {", 132],
   ["native/zero-c/src/row_syntax.c|Program z_parse_row(const ZRowTokenVec *tokens, const ZRowTree *tree, ZDiag *diag) {", 130],
   ["native/zero-c/src/ir.c|static bool ir_lower_byte_view(const Program *program, IrProgram *ir, const IrFunction *fun, const Expr *expr, IrValue **out) {", 124],
+  ["native/zero-c/src/main.c|static bool test_eval_expr(const Program *program, TestEnv *env, const Expr *expr, TestValue *out, TestRunFailure *failure) {", 124],
   ["native/zero-c/src/row_syntax.c|bool z_row_parse_layout(const ZRowTokenVec *tokens, ZRowTree *tree, ZDiag *diag) {", 123],
 ]);
 
@@ -101,6 +110,85 @@ function lineCount(text) {
   return text.endsWith("\n") ? text.split("\n").length - 1 : text.split("\n").length;
 }
 
+function createCScanState(): CScanState {
+  return { blockComment: false, quote: null };
+}
+
+function cCodeLine(line: string, state: CScanState): string {
+  let out = "";
+  for (let index = 0; index < line.length; index++) {
+    const ch = line[index];
+    const next = line[index + 1];
+    if (state.blockComment) {
+      if (ch === "*" && next === "/") {
+        out += "  ";
+        index++;
+        state.blockComment = false;
+      } else {
+        out += " ";
+      }
+      continue;
+    }
+    if (state.quote) {
+      if (ch === "\\" && index + 1 < line.length) {
+        out += "  ";
+        index++;
+        continue;
+      }
+      out += " ";
+      if (ch === state.quote) state.quote = null;
+      continue;
+    }
+    if (ch === "/" && next === "*") {
+      out += "  ";
+      index++;
+      state.blockComment = true;
+      continue;
+    }
+    if (ch === "/" && next === "/") {
+      out += " ".repeat(line.length - index);
+      break;
+    }
+    if (ch === "\"" || ch === "'") {
+      out += " ";
+      state.quote = ch;
+      continue;
+    }
+    out += ch;
+  }
+  return out;
+}
+
+function cCodeChar(text: string, index: number, state: CScanState): { ch: string; index: number } {
+  const ch = text[index];
+  const next = text[index + 1];
+  if (state.blockComment) {
+    if (ch === "*" && next === "/") {
+      state.blockComment = false;
+      return { ch: " ", index: index + 1 };
+    }
+    return { ch: " ", index };
+  }
+  if (state.quote) {
+    if (ch === "\\" && index + 1 < text.length) return { ch: " ", index: index + 1 };
+    if (ch === state.quote) state.quote = null;
+    return { ch: " ", index };
+  }
+  if (ch === "/" && next === "*") {
+    state.blockComment = true;
+    return { ch: " ", index: index + 1 };
+  }
+  if (ch === "/" && next === "/") {
+    const newline = text.indexOf("\n", index + 2);
+    return { ch: " ", index: newline < 0 ? text.length - 1 : newline - 1 };
+  }
+  if (ch === "\"" || ch === "'") {
+    state.quote = ch;
+    return { ch: " ", index };
+  }
+  return { ch, index };
+}
+
 function updateBraceDepth(line, depth) {
   for (const ch of line) {
     if (ch === "{") depth++;
@@ -114,13 +202,15 @@ function largeFunctions(path, text) {
   const results = [];
   let depth = 0;
   let current = null;
+  const cState = createCScanState();
   const functionStart = /^([A-Za-z_][A-Za-z0-9_]*|static)[A-Za-z0-9_ \t*]+[A-Za-z_][A-Za-z0-9_]*\([^;]*\)[ \t]*\{/;
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index];
-    if (!current && depth === 0 && functionStart.test(line)) {
+    const codeLine = cCodeLine(line, cState);
+    if (!current && depth === 0 && functionStart.test(codeLine)) {
       current = { path, line: index + 1, signature: line.trim() };
     }
-    depth = updateBraceDepth(line, depth);
+    depth = updateBraceDepth(codeLine, depth);
     if (current && depth === 0) {
       const size = index + 1 - current.line + 1;
       if (size >= LARGE_FUNCTION_REPORT_THRESHOLD) results.push({ ...current, lines: size });
@@ -159,11 +249,23 @@ function largeFunctionKey(item) {
 function cBlock(text, marker) {
   const markerIndex = text.indexOf(marker);
   if (markerIndex < 0) return "";
-  const openIndex = text.indexOf("{", markerIndex);
+  let openIndex = -1;
+  let scan = createCScanState();
+  for (let index = markerIndex; index < text.length; index++) {
+    const code = cCodeChar(text, index, scan);
+    index = code.index;
+    if (code.ch === "{") {
+      openIndex = index;
+      break;
+    }
+  }
   if (openIndex < 0) return "";
+  scan = createCScanState();
   let depth = 0;
   for (let index = openIndex; index < text.length; index++) {
-    const ch = text[index];
+    const code = cCodeChar(text, index, scan);
+    const ch = code.ch;
+    index = code.index;
     if (ch === "{") depth++;
     else if (ch === "}") {
       depth--;
@@ -190,27 +292,39 @@ function parseStdHttpErrorNames(text) {
 }
 
 function parseCheckerReturnTypes(text) {
-  const result = new Map();
+  const map = new Map();
+  const names = [];
   const block = cBlock(text, "static const char *std_call_return_type");
   for (const match of block.matchAll(/strcmp\(name\.data,\s+"(std\.[^"]+)"\)\s*==\s*0\)\s*result\s*=\s*"([^"]+)"/g)) {
-    result.set(match[1], match[2]);
+    names.push(match[1]);
+    if (!map.has(match[1])) map.set(match[1], match[2]);
   }
   for (const name of parseStdHttpErrorNames(text)) {
-    result.set(name, "HttpError");
+    names.push(name);
+    if (!map.has(name)) map.set(name, "HttpError");
   }
-  return result;
+  return {
+    map,
+    duplicates: duplicates(names),
+  };
 }
 
 function parseCheckerArgCounts(text) {
-  const result = new Map();
+  const map = new Map();
+  const names = [];
   const block = cBlock(text, "static int std_call_arg_count");
   for (const match of block.matchAll(/strcmp\(name,\s+"(std\.[^"]+)"\)\s*==\s*0\)\s*return\s*(-?\d+)/g)) {
-    result.set(match[1], Number(match[2]));
+    names.push(match[1]);
+    if (!map.has(match[1])) map.set(match[1], Number(match[2]));
   }
   for (const name of parseStdHttpErrorNames(text)) {
-    result.set(name, 0);
+    names.push(name);
+    if (!map.has(name)) map.set(name, 0);
   }
-  return result;
+  return {
+    map,
+    duplicates: duplicates(names),
+  };
 }
 
 function parseCheckerArgTypeNames(text) {
@@ -306,6 +420,12 @@ function budgetViolations(files, allLargeFunctions, stdlib) {
       helpers: stdlib.duplicateMainHelpers,
     });
   }
+  if (stdlib.duplicateCheckerReturnTypes.length > 0) {
+    violations.push({
+      kind: "duplicate-checker-stdlib-return-type",
+      helpers: stdlib.duplicateCheckerReturnTypes,
+    });
+  }
   if (stdlib.checkerReturnsMissingFromMainHelpers.length > 0) {
     violations.push({
       kind: "stdlib-checker-return-extra",
@@ -338,6 +458,12 @@ function budgetViolations(files, allLargeFunctions, stdlib) {
     violations.push({
       kind: "stdlib-checker-arg-count-extra",
       names: stdlib.checkerArgCountsMissingFromMainHelpers,
+    });
+  }
+  if (stdlib.duplicateCheckerArgCounts.length > 0) {
+    violations.push({
+      kind: "duplicate-checker-stdlib-arg-count",
+      helpers: stdlib.duplicateCheckerArgCounts,
     });
   }
   if (stdlib.mainHelpersMissingFromCheckerArgCounts.length > 0) {
@@ -398,8 +524,10 @@ const main = texts.get("native/zero-c/src/main.c") ?? "";
 const ir = texts.get("native/zero-c/src/ir.c") ?? "";
 
 const stdHelpers = parseStdHelpers(main);
-const checkerReturnTypes = parseCheckerReturnTypes(checker);
-const checkerArgCounts = parseCheckerArgCounts(checker);
+const checkerReturnTypeInfo = parseCheckerReturnTypes(checker);
+const checkerArgCountInfo = parseCheckerArgCounts(checker);
+const checkerReturnTypes = checkerReturnTypeInfo.map;
+const checkerArgCounts = checkerArgCountInfo.map;
 const checkerArgTypeNames = parseCheckerArgTypeNames(checker);
 const checkerKnownStdNames = namesFromRegex(checker, /"(std\.[^"]+)"/g);
 const checkerReturnNames = sortedMapKeys(checkerReturnTypes);
@@ -422,6 +550,8 @@ const stdlib = {
   mainHelperCount: new Set(mainHelperNames).size,
   irDirectStdCallCount: new Set(irStdNames).size,
   duplicateMainHelpers: duplicates(mainHelperNames),
+  duplicateCheckerReturnTypes: checkerReturnTypeInfo.duplicates,
+  duplicateCheckerArgCounts: checkerArgCountInfo.duplicates,
   returnNamesMissingFromMainHelpers: missingFrom(checkerReturnNames, mainHelperNames),
   checkerReturnsMissingFromMainHelpers: missingFrom(checkerReturnNames, mainHelperNames),
   mainHelpersMissingFromCheckerReturns: missingFrom(mainHelperNames, checkerReturnNames),
