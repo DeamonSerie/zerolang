@@ -294,6 +294,37 @@ static bool build_check_macho_byte_view_ptr(const ZBuildability *ctx, const IrFu
   return build_diag(ctx, diag, "direct AArch64 Mach-O value is not a supported byte view", view->line, view->column, "unsupported byte view");
 }
 
+static bool build_check_macho_byte_view_len(const ZBuildability *ctx, const IrFunction *fun, const IrValue *view, ZDiag *diag) {
+  if (!view) return build_diag(ctx, diag, "direct AArch64 Mach-O byte view is missing", 1, 1, "missing byte view");
+  if (view->kind == IR_VALUE_STRING_LITERAL || view->kind == IR_VALUE_ARRAY_BYTE_VIEW) {
+    if (view->data_len > 65535u) {
+      return build_diag(ctx, diag, "direct AArch64 Mach-O byte-view length is too large for the current MVP", view->line, view->column, "large byte view");
+    }
+    return true;
+  }
+  if (view->kind == IR_VALUE_LOCAL && fun && view->local_index < fun->local_len && fun->locals[view->local_index].type == IR_TYPE_BYTE_VIEW) return true;
+  if (view->kind == IR_VALUE_MAYBE_VALUE && fun && view->local_index < fun->local_len && fun->locals[view->local_index].type == IR_TYPE_MAYBE_BYTE_VIEW) return true;
+  if (view->kind == IR_VALUE_BYTE_SLICE) {
+    unsigned start = 0;
+    unsigned end = 0;
+    bool const_start = !view->index || build_const_u32_value(view->index, &start);
+    bool const_end = build_const_u32_value(view->right, &end);
+    if (const_start && const_end && end >= start && end - start <= 65535u) return true;
+    if (const_start && view->right) {
+      if (start > BUILD_AARCH64_IMM12_MAX) {
+        return build_diag(ctx, diag, "direct AArch64 Mach-O byte slice constant start is too large", view->line, view->column, "unsupported byte view length");
+      }
+      return true;
+    }
+    if (view->index && view->right) return true;
+  }
+  return build_diag(ctx, diag, "direct AArch64 Mach-O byte-view length currently requires a literal, constant slice, or byte-view local", view->line, view->column, "unsupported byte view length");
+}
+
+static bool build_check_macho_byte_view(const ZBuildability *ctx, const IrFunction *fun, const IrValue *view, ZDiag *diag) {
+  return build_check_macho_byte_view_ptr(ctx, fun, view, diag) && build_check_macho_byte_view_len(ctx, fun, view, diag);
+}
+
 static bool build_value_supported(const ZBuildability *ctx, const IrValue *value, bool local_set_value) {
   if (!ctx || !value) return false;
   if (ctx->backend == Z_BUILD_BACKEND_ELF_AARCH64) return true;
@@ -351,8 +382,21 @@ static bool build_check_value(const ZBuildability *ctx, const IrFunction *fun, c
     skip_left = value->kind == IR_VALUE_BYTE_VIEW_LEN || value->kind == IR_VALUE_BYTE_VIEW_INDEX_LOAD || value->kind == IR_VALUE_FIXED_BUF_ALLOC || value->kind == IR_VALUE_VEC_INIT;
   }
   if (ctx->backend == Z_BUILD_BACKEND_MACHO64) {
-    if (value->kind == IR_VALUE_BYTE_VIEW_INDEX_LOAD && !build_check_macho_byte_view_ptr(ctx, fun, value->left, diag)) return false;
-    if ((value->kind == IR_VALUE_FIXED_BUF_ALLOC || value->kind == IR_VALUE_VEC_INIT) && !build_check_macho_byte_view_ptr(ctx, fun, value->left, diag)) return false;
+    if (value->kind == IR_VALUE_BYTE_VIEW_LEN && !build_check_macho_byte_view_len(ctx, fun, value->left, diag)) return false;
+    if (value->kind == IR_VALUE_BYTE_VIEW_INDEX_LOAD && !build_check_macho_byte_view(ctx, fun, value->left, diag)) return false;
+    if ((value->kind == IR_VALUE_FIXED_BUF_ALLOC || value->kind == IR_VALUE_VEC_INIT) && !build_check_macho_byte_view(ctx, fun, value->left, diag)) return false;
+    if ((value->kind == IR_VALUE_JSON_PARSE_BYTES || value->kind == IR_VALUE_JSON_VALIDATE_BYTES || value->kind == IR_VALUE_JSON_STREAM_TOKENS_BYTES) &&
+        !build_check_macho_byte_view(ctx, fun, value->left, diag)) return false;
+    if (value->kind == IR_VALUE_HTTP_FETCH) {
+      if (!build_check_macho_byte_view(ctx, fun, value->left, diag)) return false;
+      if (!build_check_macho_byte_view(ctx, fun, value->right, diag)) return false;
+    }
+    if ((value->kind == IR_VALUE_HTTP_RESPONSE_LEN || value->kind == IR_VALUE_HTTP_RESPONSE_HEADERS_LEN || value->kind == IR_VALUE_HTTP_RESPONSE_BODY_OFFSET) &&
+        !build_check_macho_byte_view(ctx, fun, value->left, diag)) return false;
+    if (value->kind == IR_VALUE_HTTP_HEADER_VALUE) {
+      if (!build_check_macho_byte_view(ctx, fun, value->left, diag)) return false;
+      if (!build_check_macho_byte_view(ctx, fun, value->right, diag)) return false;
+    }
   }
   if (value->kind == IR_VALUE_BINARY) {
     bool supported = true;
@@ -433,7 +477,7 @@ static bool build_check_instr(const ZBuildability *ctx, const IrFunction *fun, c
         return !instr->value || build_check_coff_byte_view(ctx, fun, instr->value, diag);
       }
       if (ctx->backend == Z_BUILD_BACKEND_MACHO64 && fun && instr->local_index < fun->local_len && fun->locals[instr->local_index].type == IR_TYPE_BYTE_VIEW) {
-        if (instr->value && !build_check_macho_byte_view_ptr(ctx, fun, instr->value, diag)) return false;
+        if (instr->value && !build_check_macho_byte_view(ctx, fun, instr->value, diag)) return false;
       }
       if (instr->value && !build_check_value(ctx, fun, instr->value, true, 0, diag)) return false;
       return true;
@@ -444,7 +488,7 @@ static bool build_check_instr(const ZBuildability *ctx, const IrFunction *fun, c
       return true;
     case IR_INSTR_WORLD_WRITE:
       if (ctx->backend == Z_BUILD_BACKEND_COFF_X64 && instr->value && !build_check_coff_byte_view(ctx, fun, instr->value, diag)) return false;
-      if (ctx->backend == Z_BUILD_BACKEND_MACHO64 && instr->value && !build_check_macho_byte_view_ptr(ctx, fun, instr->value, diag)) return false;
+      if (ctx->backend == Z_BUILD_BACKEND_MACHO64 && instr->value && !build_check_macho_byte_view(ctx, fun, instr->value, diag)) return false;
       if (ctx->backend != Z_BUILD_BACKEND_COFF_X64 && instr->value && !build_check_value(ctx, fun, instr->value, false, 0, diag)) return false;
       if (instr->index && !build_check_value(ctx, fun, instr->index, false, 0, diag)) return false;
       return true;

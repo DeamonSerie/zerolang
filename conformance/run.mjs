@@ -345,6 +345,7 @@ for (const fixture of [
   "conformance/native/pass/coff-dynamic-byte-slice-blocked.0",
   "conformance/native/pass/macho-large-byte-slice-blocked.0",
   "conformance/native/pass/macho-nested-call-scratch-blocked.0",
+  "conformance/native/pass/macho-open-byte-slice-blocked.0",
   "conformance/native/pass/string-byte-ergonomics.0",
   "conformance/native/pass/indexed-mutation.0",
   "conformance/native/pass/nested-lvalues.0",
@@ -922,6 +923,11 @@ await assertMachOObjectBuildabilityBlocked(
   "conformance/native/pass/macho-nested-call-scratch-blocked.0",
   "macho-nested-call-scratch.o",
   /scratch spill capacity/,
+);
+await assertMachOObjectBuildabilityBlocked(
+  "conformance/native/pass/macho-open-byte-slice-blocked.0",
+  "macho-open-byte-slice.o",
+  /byte-view length/,
 );
 
 const directCallArm64ObjReadiness = await execFileAsync(zero, [

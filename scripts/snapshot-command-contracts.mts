@@ -1457,6 +1457,11 @@ assertMachOObjectBuildabilityBlocked(
   "macho-nested-call-scratch.o",
   /scratch spill capacity/,
 );
+assertMachOObjectBuildabilityBlocked(
+  "conformance/native/pass/macho-open-byte-slice-blocked.0",
+  "macho-open-byte-slice.o",
+  /byte-view length/,
+);
 const machOObjectBlockedReadiness = json(["check", "--json", "--emit", "obj", "--target", "darwin-arm64", "examples/memory-package"]).body;
 assert.equal(machOObjectBlockedReadiness.ok, true);
 assert.equal(machOObjectBlockedReadiness.diagnostics.length, 0);
