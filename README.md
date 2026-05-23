@@ -63,6 +63,43 @@ zero size --json examples/point.0
 
 The JSON contracts include diagnostic codes and spans, public symbols, import edges, target readiness, compile-time sandbox facts, retained helpers, and size retention reasons.
 
+### Dynamic Compilation Control (AI Control)
+
+The compiler supports AI-influenced compilation through an optional `--ai-control`
+flag. An external AI module sends JSON commands to influence compilation
+parameters mid-process at defined hook points between phases.
+
+```bash
+# AI writes commands to a control file; the compiler reads them at each phase
+zero build --ai-control /tmp/zero-ai-commands.json examples/hello.0
+```
+
+Commands are JSON objects, one per line in the control file:
+
+```json
+{"command": "set-profile", "args": ["debug"]}
+{"command": "set-param", "args": ["profile", "tiny"]}
+{"command": "skip-phase", "args": ["codegen"]}
+{"command": "status", "args": []}
+```
+
+The compiler writes JSON feedback events to `<control_path>.out` at each hook
+point, including phase timing, diagnostic counts, and applied command results:
+
+```json
+{"schemaVersion":1,"kind":"ai-control-feedback","phase":"check","elapsedMs":12,"accumulatedMs":45,"phaseCompleted":true,"message":"check passed"}
+```
+
+Supported commands include `set-profile`, `set-param`, `skip-phase`, `set-target`,
+`set-emit-kind`, `status`, `reset`, and `abort`. A security whitelist controls
+which commands are accepted (dangerous commands like `abort` and `set-target` are
+denied by default).
+
+When `--ai-control` is not specified, all hooks are no-ops and the compiler
+behaves identically to before.
+
+See `docs/ai-control.md` for the full API reference and protocol documentation.
+
 ### Compiler-Native Contracts
 
 Most language ecosystems expose some of these facts through separate tools, editor protocols, or library APIs. zerolang keeps the agent-facing inspection and repair path in the compiler CLI.
