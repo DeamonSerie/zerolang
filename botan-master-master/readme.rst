@@ -25,49 +25,6 @@ contributions are welcome. If you need help, please open an issue on `GitHub
 security issue, see the `security page <https://botan.randombit.net/security.html>`_
 for contact information.
 
-|ci_status| |nightly_ci_status| |coverage| |ossfuzz| |repo| |ossf| |cii|
-
-.. |ci_status| image:: https://github.com/randombit/botan/actions/workflows/ci.yml/badge.svg?branch=master
-    :target: https://github.com/randombit/botan/actions/workflows/ci.yml
-    :alt: CI status
-
-.. |nightly_ci_status| image:: https://github.com/randombit/botan/actions/workflows/nightly.yml/badge.svg?branch=master
-    :target: https://github.com/randombit/botan/actions/workflows/nightly.yml
-    :alt: nightly CI status
-
-.. |coverage| image:: https://img.shields.io/coverallsCoverage/github/randombit/botan?branch=master
-    :target: https://coveralls.io/github/randombit/botan
-    :alt: Coverage report
-
-.. |ossfuzz| image:: https://oss-fuzz-build-logs.storage.googleapis.com/badges/botan.svg
-    :target: https://oss-fuzz.com/coverage-report/job/libfuzzer_asan_botan/latest
-    :alt: OSS-Fuzz status
-
-.. |repo| image:: https://repology.org/badge/tiny-repos/botan.svg
-    :target: https://repology.org/project/botan/versions
-    :alt: Packaging status
-
-.. |ossf| image:: https://api.securityscorecards.dev/projects/github.com/randombit/botan/badge
-    :target: https://securityscorecards.dev/viewer/?uri=github.com/randombit/botan
-    :alt: OSSF Scorecard
-
-.. |cii| image:: https://bestpractices.coreinfrastructure.org/projects/531/badge
-    :target: https://bestpractices.coreinfrastructure.org/projects/531
-    :alt: CII Best Practices statement
-
-Releases
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-All releases are signed with a `PGP key <https://botan.randombit.net/pgpkey.txt>`_.
-See the `release notes <https://botan.randombit.net/news.html>`_ for
-what's new.
-
-Botan is also available through most `distributions
-<https://github.com/randombit/botan/wiki/Distros>`_ such as Fedora,
-Debian, Arch and Homebrew.
-
-Botan3
---------
 
 New minor releases of Botan3 are made quarterly, normally on the first Tuesday of
 February, May, August, and November.
