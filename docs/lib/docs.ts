@@ -147,6 +147,15 @@ export const docs: Doc[] = [
     section: "Reference",
   },
   {
+    slug: "math-library",
+    title: "std.math",
+    description:
+      "Constants, comparisons, trig, exponential/log, matrix operations, complex numbers, vectors, statistics, ODE solvers, optimization, quaternions, and special functions.",
+    path: "/math-library",
+    sourcePath: "/articles/math-library.md",
+    section: "Reference",
+  },
+  {
     slug: "module-parse",
     title: "std.parse",
     description: "Allocation-free ASCII scanners and unsigned integer parsers.",

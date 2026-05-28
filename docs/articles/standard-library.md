@@ -16,6 +16,7 @@ Runnable modules:
 - `std.parse`: allocation-free ASCII scanners and unsigned integer parsers.
 - `std.codec`: byte-oriented integer encoding, varint length, and CRC-32 helpers.
 - `std.json`: string and byte-span validation, streaming token counts, explicit-allocator parsing, and caller-buffer string writing.
+- `std.math`: constants, comparisons, trig, exponential/log, polynomials, hyperbolic functions, matrix operations, complex numbers, vectors, statistics, ODE solvers, optimization, quaternions, special functions, and computation tracing.
 - `std.time`: duration math plus target-gated monotonic and wall-clock helpers.
 - `std.rand`: explicit deterministic random sources and target entropy helpers.
 - `std.proc`: host process status helpers behind the process capability.

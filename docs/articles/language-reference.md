@@ -298,15 +298,35 @@ floats, and byte-sized `char`.
 
 It does not cast strings, booleans, memory views, shapes, choices, or pointers.
 
-`f32` and `f64` are primitive floating-point types. Float literals use
-`digits "." digits` with an optional exponent, such as `1.0`, `0.5`, and
-`1.0e-3`.
+`f32` and `f64` are primitive IEEE 754 floating-point types.
 
-Untyped float literals default to `f64`. `f32` literals require an expected
-`f32` context.
+- **`f32`** — 32-bit single-precision with ~7 decimal digits of precision and a
+  maximum value of ~3.4×10³⁸.
+- **`f64`** — 64-bit double-precision with ~15 decimal digits of precision and a
+  maximum value of ~1.8×10³⁰⁸.
+
+Float literals use `digits "." digits` with an optional exponent, such as
+`1.0`, `0.5`, and `1.0e-3`.
+
+Untyped float literals default to `f64`. An `f32` literal requires an expected
+`f32` context at the binding or call site:
+
+```zero
+let ratio f64 1.0           # f64 literal
+let ratio f32 1.0           # f32 in context
+let sum + 1.5_f64 2.5       # both sides f64
+```
 
 Floats are distinct from integers. Arithmetic and comparisons require matching
-float widths.
+float widths — `f32` and `f64` cannot be mixed without an explicit `as` cast.
+
+Float-to-integer casts truncate toward zero. Integer-to-float casts convert
+exactly when the integer fits in the float's significand; otherwise the result
+is the nearest representable float.
+
+The `std.math` library (see [Math Library](/math-library)) provides
+comprehensive mathematical functions on `f64`, including trig, logarithms,
+statistics, matrix operations, ODE solvers, and special functions.
 
 `char` is a distinct byte-sized primitive for ASCII/parser/codec-style values.
 Character literals use single quotes and decode to one byte:

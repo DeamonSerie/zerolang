@@ -82,8 +82,8 @@ let byte u8 count as u8
 
 The current cast support is limited to integer-to-integer conversions.
 
-`f32` and `f64` are available for decimal float literals. Untyped float literals
-default to `f64`:
+`f32` and `f64` are available as IEEE 754 floating-point types. Untyped float
+literals default to `f64`:
 
 ```zero
 let ratio f64 1.0e-3
@@ -92,6 +92,8 @@ let total + ratio 2.0
 ```
 
 Floats do not implicitly mix with integers or with each other across widths.
+The comprehensive [`std.math`](/math-library) library provides mathematical
+functions for `f64`, including trig, logarithms, statistics, and more.
 
 `char` is also available as a distinct byte-sized primitive for single quoted
 byte literals. It does not cast to or from integers:

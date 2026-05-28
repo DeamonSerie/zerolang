@@ -6,7 +6,7 @@
 | `i8` `i16` `i32` `i64` | Signed fixed-width integers. | Runnable |
 | `u8` `u16` `u32` `u64` | Unsigned fixed-width integers. | Runnable |
 | `usize` `isize` | Pointer-sized integers. | Runnable |
-| `f32` `f64` | Floating-point values. | Runnable |
+| `f32` `f64` | IEEE 754 floating-point values. See [Float Types](#float-types) below for details. | Runnable |
 | `char` | Byte-sized character value for ASCII/parser/codec-style work. | Runnable |
 | `String` | Text value used by string literals and current I/O examples. | Runnable |
 | `Void` | Return type for functions that produce no useful value. | Runnable |
@@ -176,6 +176,71 @@ The native compiler currently supports:
 - allocation through `NullAlloc`, mutable `FixedBufAlloc`, and `ByteBuf`
 
 None of these ownership features add runtime ownership machinery.
+
+## Float Types
+
+`f32` and `f64` are IEEE 754 floating-point primitive types.
+
+- **`f32`** — 32-bit single-precision float (~7 decimal digits of precision, max ~3.4×10³⁸).
+- **`f64`** — 64-bit double-precision float (~15 decimal digits of precision, max ~1.8×10³⁰⁸).
+
+Float literals use `digits "." digits` with an optional exponent suffix, such as `1.0`, `0.5`, and `1.0e-3`.
+
+Untyped float literals default to `f64`. A float literal can be typed as `f32` only when the surrounding context expects an `f32`:
+
+```zero
+let ratio f64 1.0e-3        # f64
+let small f32 0.5            # expected f32 context
+let mixed + ratio 2.0        # 2.0 is f64
+```
+
+### Casting
+
+Explicit casts are required when converting between float types or between floats and integers:
+
+```zero
+let whole i32 7.9 as i32    # truncates to 7
+let precise f64 42 as f64   # integer to float
+let narrow f32 3.14159_f64 as f32  # f64 to f32 (may lose precision)
+```
+
+Floats are distinct from integers. Arithmetic and comparisons require matching float widths —`f32` and `f64` cannot be mixed without an explicit cast.
+
+### Operations
+
+ZeroX supports the standard arithmetic operators on `f32` and `f64`:
+
+- `+`, `-`, `*`, `/` — addition, subtraction, multiplication, division
+- `==`, `!=`, `<`, `>`, `<=`, `>=` — comparison (matching widths only)
+- `-x` — negation
+
+The `as` operator casts between float types and between floats and signed integers. See the [Casting section](#_lexical-basics-and-casting) in the language reference.
+
+### The `std.math` Library
+The [math library](/math-library) provides a rich set of mathematical functions operating on `f64` values:
+
+- Trigonometric, hyperbolic, exponential, and logarithmic functions
+- Statistical functions (mean, variance, distributions, hypothesis tests)
+- Matrix operations, ODE solvers, optimization
+- Complex numbers, quaternions, 2D/3D vectors
+- Numerical analysis (root-finding, interpolation, regression, special functions)
+
+See the [ZeroX Math Library — User Guide](/math-library) for complete documentation.
+
+### Runtime Behavior
+
+- Floating-point operations follow IEEE 754 semantics.
+- Division by zero produces ±inf or NaN depending on operands.
+- NaN values propagate through arithmetic; NaN comparisons always return false.
+- There is no implicit integer-to-float or float-to-integer promotion.
+- Float-to-integer casts truncate toward zero; the behavior for out-of-range values matches IEEE 754 `convertToIntegerTowardZero`.
+
+### Current Native Status
+
+`f32` and `f64` are fully supported:
+- Arithmetic, comparisons, negation, and casts
+- Literal parsing with decimal and exponent forms
+- Explicit float-to-float and float-to-integer casts
 
 Not part of the current native status:
 
